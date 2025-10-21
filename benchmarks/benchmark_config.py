@@ -153,7 +153,7 @@ class ExperimentConfig:
 @dataclass
 class DataConfig:
     """Data loading and splitting configuration"""
-    dataset_path: str = 'data/dataset_combined.npz'
+    dataset_path: str = 'dataset_combined.npz'
     train_split: float = 0.8
     val_split: float = 0.1
     num_workers: int = 4

@@ -42,7 +42,7 @@ def train_epoch(model, loader, optimizer, device, criterion, model_type='schnet'
         elif model_type == 'quantumshellnet':
             # QuantumShellNet needs images, z, pos, batch
             # Convert 10-channel images to 3-channel (use first 3 channels)
-            images = torch.stack([d.image[:3] for d in data.to_data_list()])  # [B, 3, 32, 32]
+            # images = torch.stack([d.image[:3] for d in data.to_data_list()])  # [B, 3, 32, 32]
             images = images.to(device).float()  # Ensure float32
             out = model(images, data.z, data.pos, data.batch)
         elif model_type == 'vit':
@@ -71,8 +71,12 @@ def train_epoch(model, loader, optimizer, device, criterion, model_type='schnet'
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, criterion, model_type='schnet'):
-    """Evaluate the model"""
+def evaluate(model, loader, device, criterion, model_type='schnet', denormalize_fn=None):
+    """Evaluate the model
+    
+    Args:
+        denormalize_fn: Function to denormalize predictions back to original scale for metrics
+    """
     model.eval()
     total_loss = 0
     predictions = []
@@ -118,7 +122,7 @@ def evaluate(model, loader, device, criterion, model_type='schnet'):
         if out.dim() > 1:
             out = out.squeeze()
         
-        # Compute loss
+        # Compute loss on normalized values
         loss = criterion(out, data.y.squeeze())
         total_loss += loss.item() * data.num_graphs
         
@@ -137,6 +141,11 @@ def evaluate(model, loader, device, criterion, model_type='schnet'):
     
     predictions = np.concatenate(predictions)
     targets = np.concatenate(targets)
+    
+    # Denormalize predictions and targets for proper metric calculation in original scale
+    if denormalize_fn is not None:
+        predictions = np.array([denormalize_fn(p) for p in predictions])
+        targets = np.array([denormalize_fn(t) for t in targets])
     
     mae = np.mean(np.abs(predictions - targets))
     rmse = np.sqrt(np.mean((predictions - targets) ** 2))
@@ -157,23 +166,37 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
     print("=" * 70)
     print(f"Save directory: {save_dir}")
     
-    # Load dataset
-    dataset = TwoBodyDataset(dataset_path, target_label=target, verbose=True)
-    
-    # Split dataset
-    n_samples = len(dataset)
+    # Split indices first (before loading dataset) for reproducibility
+    # Load full dataset temporarily just to get the number of samples
+    temp_dataset = TwoBodyDataset(dataset_path, target_label=target, verbose=False, normalize_labels=False)
+    n_samples = len(temp_dataset)
     n_train = int(cfg.train_split * n_samples)
     n_val = int(cfg.val_split * n_samples)
     n_test = n_samples - n_train - n_val
     
     indices = torch.randperm(n_samples, generator=torch.Generator().manual_seed(seed))
-    train_indices = indices[:n_train]
-    val_indices = indices[n_train:n_train+n_val]
-    test_indices = indices[n_train+n_val:]
+    train_indices = indices[:n_train].tolist()
+    val_indices = indices[n_train:n_train+n_val].tolist()
+    test_indices = indices[n_train+n_val:].tolist()
     
-    train_dataset = dataset[train_indices.tolist()]
-    val_dataset = dataset[val_indices.tolist()]
-    test_dataset = dataset[test_indices.tolist()]
+    # Load training dataset WITH normalization (computes stats from training data only)
+    print("\nLoading training dataset...")
+    train_dataset_full = TwoBodyDataset(dataset_path, target_label=target, verbose=True, normalize_labels=True)
+    train_dataset = train_dataset_full[train_indices]
+    
+    # Get normalization stats from training dataset
+    norm_stats = train_dataset_full.get_normalization_stats()
+    
+    # Load val/test datasets with SAME normalization stats
+    print("\nLoading validation dataset...")
+    val_dataset_full = TwoBodyDataset(dataset_path, target_label=target, verbose=False, 
+                                       normalize_labels=True, normalization_stats=norm_stats)
+    val_dataset = val_dataset_full[val_indices]
+    
+    print("Loading test dataset...")
+    test_dataset_full = TwoBodyDataset(dataset_path, target_label=target, verbose=False,
+                                        normalize_labels=True, normalization_stats=norm_stats)
+    test_dataset = test_dataset_full[test_indices]
     
     print(f"Split: Train={len(train_dataset)}, Val={len(val_dataset)}, Test={len(test_dataset)}")
     
@@ -233,6 +256,9 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', 
                                                                factor=0.8, patience=10, min_lr=1e-6)
     
+    # Create denormalization function
+    denormalize_fn = train_dataset_full.denormalize_label
+    
     # Training loop
     print("\nStarting training...")
     best_val_loss = float('inf')  # Track best validation MSE/MAE loss
@@ -252,11 +278,11 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
     for epoch in range(1, cfg.epochs + 1):
         epoch_start = time.time()
         
-        # Train
+        # Train (on normalized values)
         train_loss = train_epoch(model, train_loader, optimizer, device, criterion, model_type)
         
-        # Evaluate
-        val_loss, val_mae, val_rmse = evaluate(model, val_loader, device, criterion, model_type)
+        # Evaluate (denormalized for metrics in original scale)
+        val_loss, val_mae, val_rmse = evaluate(model, val_loader, device, criterion, model_type, denormalize_fn)
         
         # Scheduler step
         if scheduler is not None:
@@ -302,7 +328,8 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
                 'config': cfg.to_dict(),
                 'model_config': model_config,
                 'model_type': model_type,
-                'target': target
+                'target': target,
+                'normalization_stats': norm_stats  # Save normalization stats for inference
             }, save_path)
         
         # Early stopping
@@ -323,7 +350,7 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
         checkpoint = torch.load(best_model_path, weights_only=False)
         model.load_state_dict(checkpoint['model_state_dict'])
     
-    test_loss, test_mae, test_rmse = evaluate(model, test_loader, device, criterion, model_type)
+    test_loss, test_mae, test_rmse = evaluate(model, test_loader, device, criterion, model_type, denormalize_fn)
     
     print(f"\nBest Epoch: {best_epoch}")
     print(f"Best Val Loss: {best_val_loss:.4f}")
@@ -339,12 +366,12 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
         'target': target,
         'seed': seed,
         
-        # Best metrics
+        # Best metrics (denormalized, in original scale)
         'best_epoch': int(best_epoch),
         'best_val_loss': float(best_val_loss),
         'best_val_mae': float(best_val_mae),
         
-        # Test metrics
+        # Test metrics (denormalized, in original scale)
         'test_loss': float(test_loss),
         'test_mae': float(test_mae),
         'test_rmse': float(test_rmse),
@@ -367,6 +394,9 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
         
         # Model info
         'num_parameters': sum(p.numel() for p in model.parameters()),
+        
+        # Normalization info
+        'normalization_stats': norm_stats,
     }
     
     # Save results JSON

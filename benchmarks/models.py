@@ -365,7 +365,7 @@ class QuantumShellNet(nn.Module):
         super().__init__()
 
         # Convolutional layers - balanced for ~300K parameters (float32)
-        self.conv1 = nn.Conv2d(3, 80, kernel_size=3, padding=1, stride=2, dtype=torch.float32)
+        self.conv1 = nn.Conv2d(10, 80, kernel_size=3, padding=1, stride=2, dtype=torch.float32)
         self.conv2 = nn.Conv2d(80, 160, kernel_size=3, padding=1, stride=2, dtype=torch.float32)
         self.conv3 = nn.Conv2d(160, 96, kernel_size=3, padding=1, stride=2, dtype=torch.float32)
         self.conv4 = nn.Conv2d(96, 48, kernel_size=3, padding=1, stride=2, dtype=torch.float32)
@@ -383,7 +383,7 @@ class QuantumShellNet(nn.Module):
     def forward(self, images, z, pos, batch):
         """
         Args:
-            images: [B, 3, 32, 32] - RGB images (converted from 10-channel)
+            images: [B, 10, 32, 32] - RGB images (converted from 10-channel)
             z: [N] - Atomic numbers for all atoms in batch
             pos: [N, 3] - Positions (not used directly here)
             batch: [N] - Batch assignment for atoms
