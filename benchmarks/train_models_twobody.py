@@ -41,8 +41,8 @@ def train_epoch(model, loader, optimizer, device, criterion, model_type='schnet'
             out = model(data.z, data.pos, data.batch, images)
         elif model_type == 'quantumshellnet':
             # QuantumShellNet needs images, z, pos, batch
-            # Convert 10-channel images to 3-channel (use first 3 channels)
-            # images = torch.stack([d.image[:3] for d in data.to_data_list()])  # [B, 3, 32, 32]
+            # Use all 10 channels (QuantumShellNet expects 10-channel input)
+            images = torch.stack([d.image for d in data.to_data_list()])  # [B, 10, 32, 32]
             images = images.to(device).float()  # Ensure float32
             out = model(images, data.z, data.pos, data.batch)
         elif model_type == 'vit':
@@ -105,8 +105,8 @@ def evaluate(model, loader, device, criterion, model_type='schnet', denormalize_
             out = model(data.z, data.pos, data.batch, images)
         elif model_type == 'quantumshellnet':
             # QuantumShellNet needs images, z, pos, batch
-            # Convert 10-channel images to 3-channel (use first 3 channels)
-            images = torch.stack([d.image[:3] for d in data.to_data_list()])  # [B, 3, 32, 32]
+            # Use all 10 channels (QuantumShellNet expects 10-channel input)
+            images = torch.stack([d.image for d in data.to_data_list()])  # [B, 10, 32, 32]
             images = images.to(device).float()  # Ensure float32
             out = model(images, data.z, data.pos, data.batch)
         elif model_type == 'vit':
