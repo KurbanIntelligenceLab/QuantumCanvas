@@ -4,6 +4,7 @@ visualizations
 analysis
 data
 results*
+analysis_codes/
 figures
 # Byte-compiled / optimized / DLL files
 __pycache__/

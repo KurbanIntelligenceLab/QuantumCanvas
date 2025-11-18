@@ -1,17 +1,20 @@
 """
-QM9 SchNet Training Script
+QM9 GotenNet Training Script
 
-Automatically trains SchNet on QM9 dataset for:
+Automatically trains GotenNet on QM9 dataset for:
 - 3 targets: HOMO, LUMO, Gap
 - 3 seeds: 42, 123, 456
-- Option to fine-tune from two-body checkpoints or train from scratch
+- 2 types: from scratch AND fine-tuned
 """
 
 import torch
 import torch.nn as nn
 from torch_geometric.datasets import QM9
 from torch_geometric.loader import DataLoader
-from torch_geometric.nn import SchNet
+from gotennet import GotenNetWrapper
+from gotennet.models.components.layers import CosineCutoff
+from torch_geometric.data import Data
+from torch_scatter import scatter_mean
 import numpy as np
 import time
 import argparse
@@ -22,34 +25,25 @@ from benchmarks.qm9_config import (
 )
 
 
-class SchNetRegressor(nn.Module):
-    """SchNet wrapper matching the two-body training structure."""
+class GotenNetRegressor(nn.Module):
+    """GotenNet wrapper matching the two-body training structure."""
 
-    def __init__(
-        self,
-        hidden_channels=16,
-        num_filters=16,
-        num_interactions=2,
-        num_gaussians=8,
-        cutoff=5.0,
-        readout="add",
-    ):
+    def __init__(self, n_atom_basis=32, n_interactions=2, cutoff=5.0, num_heads=2, n_rbf=4):
         super().__init__()
-        self.schnet = SchNet(
-            hidden_channels=hidden_channels,
-            num_filters=num_filters,
-            num_interactions=num_interactions,
-            num_gaussians=num_gaussians,
-            cutoff=cutoff,
-            readout=readout,
-            dipole=False,
-            mean=None,
-            std=None,
-            atomref=None,
+        self.gotennet = GotenNetWrapper(
+            n_atom_basis=n_atom_basis,
+            n_interactions=n_interactions,
+            cutoff_fn=CosineCutoff(cutoff),
+            num_heads=num_heads,
+            n_rbf=n_rbf,
         )
+        self.regressor = nn.Linear(n_atom_basis, 1)
 
     def forward(self, z, pos, batch):
-        return self.schnet(z, pos, batch)
+        data = Data(z=z, pos=pos, batch=batch)
+        h, _ = self.gotennet(data)
+        pooled = scatter_mean(h, batch, dim=0)
+        return self.regressor(pooled).squeeze()
 
 
 def train_epoch(model, loader, optimizer, device, criterion, target_idx=7):
@@ -61,7 +55,7 @@ def train_epoch(model, loader, optimizer, device, criterion, target_idx=7):
         data = data.to(device)
         optimizer.zero_grad()
         
-        # Forward pass - SchNet returns graph-level predictions
+        # Forward pass
         out = model(data.z, data.pos, data.batch)
         
         # Compute loss
@@ -114,14 +108,10 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
                           epochs: int = 50, 
                           lr: float = 1e-4,
                           weight_decay: float = 0.0):
-    """Run a single training experiment
-    
-    Args:
-        experiment_type: 'scratch' or 'fine_tune'
-    """
+    """Run a single training experiment"""
     
     # Configuration - use standardized config
-    model_config = MODEL_CONFIGS['schnet']
+    model_config = MODEL_CONFIGS['gotennet']
     config = {
         **TRAINING_CONFIG,  # Standardized training settings
         **model_config,     # Model architecture from qm9_config
@@ -130,7 +120,7 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
         'checkpoint_path': checkpoint_path,
         'train_from_scratch': checkpoint_path is None,
         'experiment_type': experiment_type,
-        'save_dir': f'results_qm9/{target_name}/schnet/seed_{seed}/{experiment_type}',
+        'save_dir': f'results_qm9/{target_name}/gotennet/seed_{seed}/{experiment_type}',
         # Override with custom values if provided
         'batch_size': batch_size if batch_size != 32 else TRAINING_CONFIG['batch_size'],
         'epochs': epochs if epochs != 50 else TRAINING_CONFIG['epochs'],
@@ -140,34 +130,14 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     
     # Target property names
     target_names = [
-        'dipole_moment',      # 0: Dipole moment (D)
-        'isotropic_polarizability',  # 1: Isotropic polarizability (Bohr^3)
-        'homo',               # 2: HOMO energy (eV)
-        'lumo',               # 3: LUMO energy (eV)
-        'gap',                # 4: HOMO-LUMO gap (eV)
-        'electronic_spatial_extent',  # 5: Electronic spatial extent (Bohr^2)
-        'zpve',               # 6: Zero point vibrational energy (eV)
-        'U0',                 # 7: Internal energy at 0K (eV)
-        'U',                  # 8: Internal energy at 298.15K (eV)
-        'H',                  # 9: Enthalpy at 298.15K (eV)
-        'G',                  # 10: Free energy at 298.15K (eV)
-        'Cv',                 # 11: Heat capacity at 298.15K (cal/mol/K)
+        'dipole_moment', 'isotropic_polarizability', 'homo', 'lumo', 'gap',
+        'electronic_spatial_extent', 'zpve', 'U0', 'U', 'H', 'G', 'Cv'
     ]
     
-    print(f"\nTarget Property: {target_names[config['target']]} (index {config['target']})")
-    print(f"Experiment Type: {config['experiment_type'].upper()}")
-    print(f"Seed: {config['seed']}")
-    print(f"Save Directory: {config['save_dir']}")
-    
+    print(f"\nTarget: {target_names[config['target']]} (index {config['target']})")
+    print(f"Type: {config['experiment_type'].upper()} | Seed: {config['seed']}")
     if config['checkpoint_path']:
         print(f"Fine-tuning from: {config['checkpoint_path']}")
-    
-    print(f"\nSchNet Architecture:")
-    print(f"  hidden_channels={config['hidden_channels']}, num_filters={config['num_filters']}, "
-          f"num_interactions={config['num_interactions']}, num_gaussians={config['num_gaussians']}, cutoff={config['cutoff']}")
-    print(f"\nHyperparameters: batch_size={config['batch_size']}, epochs={config['epochs']}, "
-          f"lr={config['lr']}, weight_decay={config['weight_decay']}")
-    print()
     
     # Set random seed
     torch.manual_seed(config['seed'])
@@ -175,18 +145,11 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     
     # Device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}\n")
+    print(f"Device: {device}\n")
     
     # Load QM9 dataset
     print("Loading QM9 dataset...")
-    path = './data/QM9'
-    dataset = QM9(path)
-    
-    print(f"Dataset size: {len(dataset)} molecules")
-    print(f"Number of features per node: {dataset.num_features}")
-    print(f"Number of target properties: {dataset.num_classes}")
-    print(f"Example molecule: {dataset[0]}")
-    print()
+    dataset = QM9('./data/QM9')
     
     # Split dataset (standard QM9 split from config)
     train_size = QM9_SPLIT['train_size']
@@ -195,26 +158,17 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     val_dataset = dataset[train_size:train_size + val_size]
     test_dataset = dataset[train_size + val_size:]
     
-    print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
+    print(f"Split: {len(train_dataset)} train, {len(val_dataset)} val, {len(test_dataset)} test")
     
     # Create data loaders
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['batch_size'],
-        shuffle=True,
-        num_workers=TRAINING_CONFIG['num_workers']
+        train_dataset, batch_size=config['batch_size'], shuffle=True, num_workers=TRAINING_CONFIG['num_workers']
     )
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=config['batch_size'],
-        shuffle=False,
-        num_workers=TRAINING_CONFIG['num_workers']
+        val_dataset, batch_size=config['batch_size'], shuffle=False, num_workers=TRAINING_CONFIG['num_workers']
     )
     test_loader = DataLoader(
-        test_dataset,
-        batch_size=config['batch_size'],
-        shuffle=False,
-        num_workers=TRAINING_CONFIG['num_workers']
+        test_dataset, batch_size=config['batch_size'], shuffle=False, num_workers=TRAINING_CONFIG['num_workers']
     )
 
     # Compute normalization statistics from training set (for reporting consistency)
@@ -227,56 +181,34 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     target_std = train_targets.std().item()
     print(f"{target_names[config['target']]} mean: {target_mean:.6f}, std: {target_std:.6f}")
 
-    # Initialize model (using the wrapper to match checkpoint structure)
-    print("\nInitializing SchNet model...")
-    model = SchNetRegressor(
-        hidden_channels=config['hidden_channels'],
-        num_filters=config['num_filters'],
-        num_interactions=config['num_interactions'],
-        num_gaussians=config['num_gaussians'],
+    # Initialize model
+    print("\nInitializing GotenNet model...")
+    model = GotenNetRegressor(
+        n_atom_basis=config['n_atom_basis'],
+        n_interactions=config['n_interactions'],
         cutoff=config['cutoff'],
-        readout=config['readout']
+        num_heads=config['num_heads'],
+        n_rbf=config['n_rbf'],
     ).to(device)
-    
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     # Load checkpoint if fine-tuning
-    start_epoch = 1
     if config['checkpoint_path'] and not config['train_from_scratch']:
-        print(f"\n{'='*70}")
-        print(f"Loading checkpoint for fine-tuning: {config['checkpoint_path']}")
-        print(f"{'='*70}")
-        
+        print(f"\nLoading checkpoint: {config['checkpoint_path']}")
         checkpoint = torch.load(config['checkpoint_path'], map_location=device, weights_only=False)
-        
-        # Load state dict (handle different checkpoint formats)
-        if 'model_state_dict' in checkpoint:
-            state_dict = checkpoint['model_state_dict']
-        else:
-            state_dict = checkpoint
+        state_dict = checkpoint.get('model_state_dict', checkpoint)
 
-        # Two-body and QM9 now share the same wrapper structure
+        # Both two-body and QM9 use same wrapper structure (GotenNetRegressor)
         try:
             model.load_state_dict(state_dict, strict=True)
-            print("✓ Checkpoint loaded successfully (strict=True)")
+            print("✓ Checkpoint loaded (strict=True)")
         except RuntimeError as e:
-            print(f"Warning: Could not load with strict=True, trying strict=False...")
-            print(f"Error: {e}")
+            print(f"Warning: Trying strict=False... Error: {e}")
             model.load_state_dict(state_dict, strict=False)
-            print("✓ Checkpoint loaded with strict=False (some parameters may not match)")
-        
-        print(f"Fine-tuning from pre-trained two-body model\n")
-    elif config['train_from_scratch']:
-        print("Training from scratch (randomly initialized weights)\n")
-    else:
-        print("Training from scratch (no checkpoint provided)\n")
+            print("✓ Checkpoint loaded (strict=False)")
     
     # Optimizer and loss
-    optimizer = torch.optim.Adam(
-        model.parameters(), 
-        lr=config['lr'],
-        weight_decay=config['weight_decay']
-    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], weight_decay=config['weight_decay'])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
         mode='min', 
@@ -287,53 +219,38 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     criterion = torch.nn.L1Loss()
     
     # Training loop
-    print("\n" + "=" * 70)
-    print("Starting Training")
-    print("=" * 70 + "\n")
+    print("\nStarting Training...\n")
     
     best_val_mae = float('inf')
     best_epoch = 0
     history = {'train_loss': [], 'val_loss': [], 'val_mae': [], 'epoch_times': [], 'learning_rates': []}
     
-    # Create save directory
     save_dir = Path(config['save_dir'])
     save_dir.mkdir(parents=True, exist_ok=True)
     
-    for epoch in range(start_epoch, config['epochs'] + 1):
+    for epoch in range(1, config['epochs'] + 1):
         start_time = time.time()
         
-        # Train
         train_loss = train_epoch(model, train_loader, optimizer, device, criterion, config['target'])
-        
-        # Evaluate
         val_loss, val_mae = evaluate(model, val_loader, device, criterion, config['target'])
-        
-        # Learning rate scheduling
         scheduler.step(val_mae)
         
         epoch_time = time.time() - start_time
         current_lr = optimizer.param_groups[0]['lr']
         
-        # Save history (convert to float for JSON serialization)
+        # Convert to float for JSON serialization
         history['train_loss'].append(float(train_loss))
         history['val_loss'].append(float(val_loss))
         history['val_mae'].append(float(val_mae))
         history['epoch_times'].append(float(epoch_time))
         history['learning_rates'].append(float(current_lr))
         
-        # Print progress
-        print(f"Epoch {epoch:03d} | "
-              f"Train Loss: {train_loss:.4f} | "
-              f"Val Loss: {val_loss:.4f} | "
-              f"Val MAE: {val_mae:.4f} | "
-              f"Time: {epoch_time:.2f}s | "
-              f"LR: {current_lr:.6f}")
+        print(f"Epoch {epoch:03d} | Train: {train_loss:.4f} | Val: {val_loss:.4f} | "
+              f"MAE: {val_mae:.4f} | Time: {epoch_time:.2f}s | LR: {current_lr:.6f}")
         
-        # Save best model
         if val_mae < best_val_mae:
             best_val_mae = val_mae
             best_epoch = epoch
-            best_model_path = save_dir / 'best_model.pt'
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -341,48 +258,39 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
                 'val_mae': val_mae,
                 'val_loss': val_loss,
                 'config': config
-            }, best_model_path)
-            print(f"  → New best model saved! (MAE: {val_mae:.4f})")
+            }, save_dir / 'best_model.pt')
+            print(f"  → Best model saved (MAE: {val_mae:.4f})")
         
-        # Early stopping
         if epoch - best_epoch > TRAINING_CONFIG['early_stopping_patience']:
             print(f"\nEarly stopping at epoch {epoch}")
             break
     
     # Test evaluation
-    print("\n" + "=" * 70)
-    print("Final Evaluation on Test Set")
-    print("=" * 70)
-    
-    # Load best model
-    best_model_path = save_dir / 'best_model.pt'
-    checkpoint = torch.load(best_model_path, weights_only=False)
+    print("\nFinal Test Evaluation:")
+    checkpoint = torch.load(save_dir / 'best_model.pt', weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     
     test_loss, test_mae = evaluate(model, test_loader, device, criterion, config['target'])
     
     # Calculate RMSE
     test_rmse = 0
-    for data in test_loader:
-        data = data.to(device)
-        out = model(data.z, data.pos, data.batch)
-        squared_errors = (out.squeeze() - data.y[:, config['target']]) ** 2
-        test_rmse += squared_errors.sum().item()
+    model.eval()
+    with torch.no_grad():
+        for data in test_loader:
+            data = data.to(device)
+            out = model(data.z, data.pos, data.batch)
+            squared_errors = (out.squeeze() - data.y[:, config['target']]) ** 2
+            test_rmse += squared_errors.sum().item()
     test_rmse = np.sqrt(test_rmse / len(test_loader.dataset))
     
-    print(f"\nBest Epoch: {checkpoint['epoch']}")
-    print(f"Test Loss: {test_loss:.4f}")
-    print(f"Test MAE: {test_mae:.4f}")
-    print(f"Test RMSE: {test_rmse:.4f}")
-    print(f"Target: {target_names[config['target']]}")
-    print("\n" + "=" * 70)
+    print(f"Best Epoch: {checkpoint['epoch']}")
+    print(f"Test MAE: {test_mae:.4f} | Test RMSE: {test_rmse:.4f}")
     
     # Save results
-    # Convert config to JSON-serializable format
     config_serializable = {k: (str(v) if isinstance(v, Path) else v) for k, v in config.items()}
     
     results = {
-        'model_type': 'schnet',
+        'model_type': 'gotennet',
         'dataset': 'qm9',
         'target': target_names[config['target']],
         'target_idx': config['target'],
@@ -408,42 +316,25 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
         'avg_epoch_time_sec': np.mean(history['epoch_times'])
     }
     
-    results_path = save_dir / 'results.json'
-    with open(results_path, 'w') as f:
+    with open(save_dir / 'results.json', 'w') as f:
         json.dump(results, f, indent=2)
-    
-    print(f"Results saved to {results_path}")
     
     return model, test_mae
 
 
 def main():
-    """
-    Main function that runs all experiments:
-    - 3 targets: HOMO (2), LUMO (3), Gap (4)
-    - 3 seeds: 42, 123, 456
-    - 2 types: from scratch AND fine-tuned
-    - Total: 18 experiments (3 × 3 × 2)
-    """
+    """Run all experiments: 3 targets × 3 seeds × 2 types = 18 experiments"""
     
-    # Parse arguments
-    parser = argparse.ArgumentParser(
-        description='Train SchNet on QM9 dataset for HOMO/LUMO/Gap prediction (both scratch and fine-tuned)'
-    )
-    parser.add_argument('--scratch-only', action='store_true',
-                        help='Only train from scratch (skip fine-tuning)')
-    parser.add_argument('--finetune-only', action='store_true',
-                        help='Only fine-tune (skip from scratch)')
-    parser.add_argument('--batch-size', type=int, default=32,
-                        help='Batch size (default: 32)')
-    parser.add_argument('--epochs', type=int, default=50,
-                        help='Number of epochs (default: 50)')
+    parser = argparse.ArgumentParser(description='Train GotenNet on QM9 (HOMO/LUMO/Gap)')
+    parser.add_argument('--scratch-only', action='store_true', help='Only train from scratch')
+    parser.add_argument('--finetune-only', action='store_true', help='Only fine-tune')
+    parser.add_argument('--batch-size', type=int, default=32, help='Batch size (default: 32)')
+    parser.add_argument('--epochs', type=int, default=50, help='Epochs (default: 50)')
     parser.add_argument('--lr', type=float, default=TRAINING_CONFIG['lr_scratch'],
-                        help=f"Learning rate for from-scratch (default: {TRAINING_CONFIG['lr_scratch']})")
+                        help=f"Learning rate for scratch (default: {TRAINING_CONFIG['lr_scratch']})")
     parser.add_argument('--finetune-lr', type=float, default=TRAINING_CONFIG['lr_finetune'],
-                        help=f"Learning rate for fine-tuning (default: {TRAINING_CONFIG['lr_finetune']})")
-    parser.add_argument('--weight-decay', type=float, default=0.0,
-                        help='Weight decay (default: 0.0)')
+                        help=f"Learning rate for fine-tune (default: {TRAINING_CONFIG['lr_finetune']})")
+    parser.add_argument('--weight-decay', type=float, default=0.0, help='Weight decay (default: 0.0)')
     
     args = parser.parse_args()
     
@@ -459,19 +350,17 @@ def main():
         experiment_types.append('scratch')
     
     if not experiment_types:
-        print("Error: Cannot skip both scratch and fine-tune!")
+        print("Error: Cannot skip both!")
         return
     
     total_experiments = len(experiments) * len(seeds) * len(experiment_types)
     
     print("\n" + "=" * 80)
-    print("QM9 BENCHMARK: SchNet on HOMO/LUMO/Gap")
+    print("QM9 BENCHMARK: GotenNet on HOMO/LUMO/Gap")
     print("=" * 80)
-    print(f"\nExperiment Types: {', '.join(experiment_types)}")
-    print(f"Targets: {', '.join([name.upper() for _, name in experiments])}")
-    print(f"Seeds: {seeds}")
-    print(f"Total experiments: {len(experiments)} targets × {len(seeds)} seeds × {len(experiment_types)} types = {total_experiments}")
-    print("\n" + "=" * 80 + "\n")
+    print(f"Types: {', '.join(experiment_types)}")
+    print(f"Targets: HOMO, LUMO, Gap | Seeds: {seeds}")
+    print(f"Total: {total_experiments} experiments\n" + "=" * 80 + "\n")
     
     results_summary = []
     experiment_count = 0
@@ -481,38 +370,24 @@ def main():
             for exp_type in experiment_types:
                 experiment_count += 1
                 
-                print("\n" + "=" * 80)
+                print(f"\n{'='*80}")
                 print(f"EXPERIMENT {experiment_count}/{total_experiments}: {target_name.upper()} | Seed {seed} | {exp_type.upper()}")
                 print("=" * 80)
                 
-                # Get checkpoint path if fine-tuning
                 checkpoint_path = None
                 current_lr = args.lr
                 
                 if exp_type == 'fine_tune':
-                    checkpoint_path = get_checkpoint_path('schnet', target_name, seed)
+                    checkpoint_path = get_checkpoint_path('gotennet', target_name, seed)
                     current_lr = args.finetune_lr
-                    if checkpoint_path:
-                        print(f"Using checkpoint: {checkpoint_path}")
-                        print(f"Using lower learning rate for fine-tuning: {current_lr}")
-                    else:
-                        print(f"⚠️  Warning: No checkpoint found, skipping fine-tune experiment")
+                    if not checkpoint_path:
+                        print("⚠️  No checkpoint found, skipping")
                         continue
-                else:
-                    print("Training from scratch (randomly initialized)")
                 
                 try:
-                    # Run experiment
                     model, test_mae = run_single_experiment(
-                        target_idx=target_idx,
-                        target_name=target_name,
-                        seed=seed,
-                        checkpoint_path=checkpoint_path,
-                        experiment_type=exp_type,
-                        batch_size=args.batch_size,
-                        epochs=args.epochs,
-                        lr=current_lr,
-                        weight_decay=args.weight_decay
+                        target_idx, target_name, seed, checkpoint_path, exp_type,
+                        args.batch_size, args.epochs, current_lr, args.weight_decay
                     )
                     
                     results_summary.append({
@@ -522,44 +397,41 @@ def main():
                         'test_mae': test_mae,
                     })
                     
-                    print(f"\n✅ Completed: {target_name.upper()} seed {seed} {exp_type} | Test MAE: {test_mae:.4f}\n")
+                    print(f"\n✅ Completed: {target_name.upper()} seed {seed} {exp_type} | MAE: {test_mae:.4f}\n")
                     
                 except Exception as e:
-                    print(f"\n❌ Error in {target_name.upper()} seed {seed} {exp_type}: {e}\n")
+                    print(f"\n❌ Error: {e}\n")
                     import traceback
                     traceback.print_exc()
     
-    # Print final summary
+    # Final summary
     print("\n" + "=" * 80)
     print("FINAL SUMMARY")
     print("=" * 80)
     
     for target_idx, target_name in experiments:
         print(f"\n{target_name.upper()}:")
-        
         for exp_type in experiment_types:
-            target_results = [r for r in results_summary if r['target'] == target_name and r['type'] == exp_type]
-            if target_results:
-                maes = [r['test_mae'] for r in target_results]
+            results = [r for r in results_summary if r['target'] == target_name and r['type'] == exp_type]
+            if results:
+                maes = [r['test_mae'] for r in results]
                 print(f"  {exp_type.upper()}: {np.mean(maes):.4f} ± {np.std(maes):.4f}")
-                for r in target_results:
+                for r in results:
                     print(f"    Seed {r['seed']}: {r['test_mae']:.4f}")
     
-    print("\n" + "=" * 80)
+    print(f"\n{'='*80}")
     print(f"Completed {len(results_summary)}/{total_experiments} experiments!")
     print("=" * 80 + "\n")
 
 
 if __name__ == '__main__':
-    # Check if PyTorch Geometric is installed
     try:
         import torch_geometric
-        print(f"PyTorch Geometric version: {torch_geometric.__version__}")
-    except ImportError:
-        print("ERROR: PyTorch Geometric is not installed!")
-        print("\nPlease install with:")
-        print("  pip install torch-geometric")
+        from gotennet import GotenNetWrapper
+        print(f"PyTorch Geometric: {torch_geometric.__version__}")
+        print("GotenNet: OK")
+    except ImportError as e:
+        print(f"ERROR: Missing dependency - {e}")
         exit(1)
     
     main()
-

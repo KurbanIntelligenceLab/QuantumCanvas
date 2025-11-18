@@ -168,10 +168,10 @@ class DataConfig:
 class TrainingConfig:
     """Training hyperparameters"""
     batch_size: int = 64
-    epochs: int = 200
+    epochs: int = 50
     lr: float = 1e-3
     weight_decay: float = 0.0
-    patience: int = 50
+    patience: int = 10
     early_stopping: bool = True
     shuffle: bool = True
 
