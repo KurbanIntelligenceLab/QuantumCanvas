@@ -1,6 +1,18 @@
-# Two-Body Quantum System Dataset
+# QuantumCanvas: A Multimodal Benchmark for  Visual\\ Learning of Atomic Interactions
 
-**2850 quantum systems** with 10-channel images, 3D geometry, and 37 labels.
+**CVPR 2026 Submission under review**
+
+---
+
+## **Abstract**
+
+Despite rapid advances in molecular and materials machine learning, most models lack physical transferability: they fit correlations across whole molecules or crystals rather than learning the quantum interactions between atomic pairs. Yet bonding, charge redistribution, orbital hybridization, and electronic coupling all emerge from these two-body interactions that define local quantum fields in many-body systems.
+
+We introduce **QuantumCanvas**, a large-scale multimodal benchmark that treats two-body quantum systems as foundational units of matter. The dataset spans **2,850 element–element pairs**, each annotated with **18 electronic, thermodynamic, and geometric properties** and paired with **ten-channel image representations** derived from *l*- and *m*-resolved orbital densities, angular field transforms, co-occupancy maps, and charge-density projections. These physically grounded images encode spatial, angular, and electrostatic symmetries without explicit coordinates, providing an interpretable visual modality for quantum learning.
+
+Benchmarking eight architectures across 18 targets, we report MAEs of **0.201 eV** on energy gap with GATv2, **0.265 eV** on HOMO and **0.274 eV** on LUMO with EGNN, and **0.008 Å** on bond length with DimeNet. For energy-related quantities, DimeNet attains **2.27 eV** total-energy MAE and **0.132 eV** repulsive-energy MAE, while a multimodal fusion model achieves a **2.15 eV** Mermin free-energy MAE. Pretraining on **QuantumCanvas** further improves convergence stability and generalization when fine-tuned on **QM9**, **MD17**, and **CrysMTM**.
+
+By unifying orbital physics with vision-based representation learning, **QuantumCanvas** provides a principled and interpretable basis for learning transferable quantum interactions through coupled visual and numerical modalities.
 
 ---
 
