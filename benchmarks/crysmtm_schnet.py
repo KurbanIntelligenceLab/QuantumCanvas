@@ -1,15 +1,15 @@
 """
-QM9 SchNet Training Script
+CrysMTM (TiO2) SchNet Training Script
 
-Automatically trains SchNet on QM9 dataset for:
-- 3 targets: HOMO, LUMO, Gap
+Automatically trains SchNet on CrysMTM dataset for:
+- 3 target properties: HOMO, LUMO, Eg
 - 3 seeds: 42, 123, 456
-- Option to fine-tune from two-body checkpoints or train from scratch
+- 2 types: from scratch AND fine-tuned (from two-body checkpoints)
+- Predicts: various electronic and structural properties
 """
 
 import torch
 import torch.nn as nn
-from torch_geometric.datasets import QM9
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import SchNet
 import numpy as np
@@ -17,23 +17,16 @@ import time
 import argparse
 from pathlib import Path
 import json
-from benchmarks.qm9_config import (
-    TRAINING_CONFIG, QM9_SPLIT, QM9_TARGETS, SEEDS, MODEL_CONFIGS, get_checkpoint_path
+from benchmarks.crysmtm_config import (
+    TRAINING_CONFIG, DATASET_CONFIG, TARGET_PROPERTIES, SEEDS, MODEL_CONFIGS, get_checkpoint_path
 )
+from benchmarks.crysmtm.regression_dataloader import RegressionLoader
+from torch.utils.data import Subset
 
 
 class SchNetRegressor(nn.Module):
-    """SchNet wrapper matching the two-body training structure."""
-
-    def __init__(
-        self,
-        hidden_channels=16,
-        num_filters=16,
-        num_interactions=2,
-        num_gaussians=8,
-        cutoff=5.0,
-        readout="add",
-    ):
+    """SchNet wrapper matching the two-body training structure"""
+    def __init__(self, hidden_channels=16, num_filters=16, num_interactions=2, num_gaussians=8, cutoff=5.0):
         super().__init__()
         self.schnet = SchNet(
             hidden_channels=hidden_channels,
@@ -41,82 +34,129 @@ class SchNetRegressor(nn.Module):
             num_interactions=num_interactions,
             num_gaussians=num_gaussians,
             cutoff=cutoff,
-            readout=readout,
+            readout="mean",  # Use mean for CrysMTM
             dipole=False,
             mean=None,
             std=None,
             atomref=None,
         )
-
+    
     def forward(self, z, pos, batch):
+        # SchNet directly returns the final prediction
         return self.schnet(z, pos, batch)
 
 
-def train_epoch(model, loader, optimizer, device, criterion, target_idx=7):
+def set_all_seeds(seed):
+    """Set all random seeds for reproducibility"""
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def train_epoch(model, loader, optimizer, device, criterion, target_index, mean, std):
     """Train for one epoch"""
     model.train()
     total_loss = 0
     
-    for data in loader:
-        data = data.to(device)
+    for batch in loader:
+        batch = batch.to(device)
         optimizer.zero_grad()
         
-        # Forward pass - SchNet returns graph-level predictions
-        out = model(data.z, data.pos, data.batch)
+        # Forward pass - SchNet expects z and pos directly
+        out = model(batch.z, batch.pos, batch.batch)
         
-        # Compute loss
-        loss = criterion(out.squeeze(), data.y[:, target_idx])
+        # Extract target
+        if batch.y.dim() == 1:
+            target = batch.y
+        else:
+            target = batch.y[:, target_index].squeeze()
+        
+        # Normalize targets
+        targets_normalized = (target - mean) / std
+        
+        # Compute loss on normalized values
+        loss = criterion(out.squeeze(), targets_normalized)
         
         # Backward pass
         loss.backward()
         optimizer.step()
         
-        total_loss += loss.item() * data.num_graphs
+        total_loss += loss.item() * batch.num_graphs
     
     return total_loss / len(loader.dataset)
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, criterion, target_idx=7):
+def evaluate(model, loader, device, criterion, target_index, mean, std):
     """Evaluate the model"""
     model.eval()
     total_loss = 0
     predictions = []
     targets = []
     
-    for data in loader:
-        data = data.to(device)
+    for batch in loader:
+        batch = batch.to(device)
         
-        # Forward pass
-        out = model(data.z, data.pos, data.batch)
+        # Forward pass - SchNet expects z and pos directly
+        out = model(batch.z, batch.pos, batch.batch)
         
-        # Compute loss
-        loss = criterion(out.squeeze(), data.y[:, target_idx])
-        total_loss += loss.item() * data.num_graphs
+        # Extract target
+        if batch.y.dim() == 1:
+            target = batch.y
+        else:
+            target = batch.y[:, target_index].squeeze()
         
-        predictions.append(out.cpu().numpy())
-        targets.append(data.y[:, target_idx].cpu().numpy())
+        # Normalize targets for loss computation
+        targets_normalized = (target - mean) / std
+        
+        # Compute loss on normalized values
+        loss = criterion(out.squeeze(), targets_normalized)
+        total_loss += loss.item() * batch.num_graphs
+        
+        # Denormalize predictions for metric computation
+        out_denormalized = out * std + mean
+        
+        predictions.append(out_denormalized.cpu().numpy())
+        targets.append(target.cpu().numpy())
     
     predictions = np.concatenate(predictions)
     targets = np.concatenate(targets)
     
+    # MAE and RMSE on original scale
     mae = np.mean(np.abs(predictions - targets))
+    rmse = np.sqrt(np.mean((predictions - targets) ** 2))
     
-    return total_loss / len(loader.dataset), mae
+    return total_loss / len(loader.dataset), mae, rmse
 
 
+def split_dataset(dataset, val_ratio=0.2, seed=42):
+    """Split dataset into train and validation"""
+    indices = np.arange(len(dataset))
+    np.random.seed(seed)
+    np.random.shuffle(indices)
+    split = int(len(indices) * (1 - val_ratio))
+    train_idx, val_idx = indices[:split], indices[split:]
+    return Subset(dataset, train_idx), Subset(dataset, val_idx)
 
 
-def run_single_experiment(target_idx: int, target_name: str, seed: int, 
+def run_single_experiment(target_index: int, target_name: str, seed: int, 
                           checkpoint_path: Path = None, 
                           experiment_type: str = 'scratch',
                           batch_size: int = 32, 
-                          epochs: int = 50, 
+                          epochs: int = 100, 
                           lr: float = 1e-4,
                           weight_decay: float = 0.0):
     """Run a single training experiment
     
     Args:
+        target_index: Index of target property in the dataset
+        target_name: Name of target property
         experiment_type: 'scratch' or 'fine_tune'
     """
     
@@ -124,13 +164,14 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     model_config = MODEL_CONFIGS['schnet']
     config = {
         **TRAINING_CONFIG,  # Standardized training settings
-        **model_config,     # Model architecture from qm9_config
-        'target': target_idx,
+        **model_config,     # Model architecture from crysmtm_config
+        'target_index': target_index,
+        'target_name': target_name,
         'seed': seed,
         'checkpoint_path': checkpoint_path,
         'train_from_scratch': checkpoint_path is None,
         'experiment_type': experiment_type,
-        'save_dir': f'results_qm9/{target_name}/schnet/seed_{seed}/{experiment_type}',
+        'save_dir': f'results_crysmtm/{target_name}/schnet/seed_{seed}/{experiment_type}',
         # Override with custom values if provided
         'batch_size': batch_size if batch_size != 32 else TRAINING_CONFIG['batch_size'],
         'epochs': epochs if epochs != 50 else TRAINING_CONFIG['epochs'],
@@ -138,23 +179,7 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
         'weight_decay': weight_decay,
     }
     
-    # Target property names
-    target_names = [
-        'dipole_moment',      # 0: Dipole moment (D)
-        'isotropic_polarizability',  # 1: Isotropic polarizability (Bohr^3)
-        'homo',               # 2: HOMO energy (eV)
-        'lumo',               # 3: LUMO energy (eV)
-        'gap',                # 4: HOMO-LUMO gap (eV)
-        'electronic_spatial_extent',  # 5: Electronic spatial extent (Bohr^2)
-        'zpve',               # 6: Zero point vibrational energy (eV)
-        'U0',                 # 7: Internal energy at 0K (eV)
-        'U',                  # 8: Internal energy at 298.15K (eV)
-        'H',                  # 9: Enthalpy at 298.15K (eV)
-        'G',                  # 10: Free energy at 298.15K (eV)
-        'Cv',                 # 11: Heat capacity at 298.15K (cal/mol/K)
-    ]
-    
-    print(f"\nTarget Property: {target_names[config['target']]} (index {config['target']})")
+    print(f"\nTarget: {target_name} (index {target_index})")
     print(f"Experiment Type: {config['experiment_type'].upper()}")
     print(f"Seed: {config['seed']}")
     print(f"Save Directory: {config['save_dir']}")
@@ -170,72 +195,80 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     print()
     
     # Set random seed
-    torch.manual_seed(config['seed'])
-    np.random.seed(config['seed'])
+    set_all_seeds(config['seed'])
     
     # Device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}\n")
     
-    # Load QM9 dataset
-    print("Loading QM9 dataset...")
-    path = './data/QM9'
-    dataset = QM9(path)
+    # Load CrysMTM dataset
+    print(f"Loading CrysMTM dataset...")
     
-    print(f"Dataset size: {len(dataset)} molecules")
-    print(f"Number of features per node: {dataset.num_features}")
-    print(f"Number of target properties: {dataset.num_classes}")
-    print(f"Example molecule: {dataset[0]}")
-    print()
+    # Define temperature filter as a proper function (not lambda) for Windows multiprocessing
+    def temp_filter(temp):
+        return temp in DATASET_CONFIG['train_temps']
     
-    # Split dataset (standard QM9 split from config)
-    train_size = QM9_SPLIT['train_size']
-    val_size = QM9_SPLIT['val_size']
-    train_dataset = dataset[:train_size]
-    val_dataset = dataset[train_size:train_size + val_size]
-    test_dataset = dataset[train_size + val_size:]
+    full_dataset = RegressionLoader(
+        label_dir=DATASET_CONFIG['base_dir'],
+        temperature_filter=temp_filter,
+        modalities=DATASET_CONFIG['modalities'],
+        max_rotations=DATASET_CONFIG['max_rotations'],
+        as_pyg_data=DATASET_CONFIG['as_pyg_data'],
+        normalize_labels=False,  # We'll handle normalization manually
+    )
     
-    print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
+    print(f"Dataset size: {len(full_dataset)} samples")
+
+    # Split train/val
+    train_dataset, val_dataset = split_dataset(
+        full_dataset, 
+        val_ratio=config['val_ratio'],
+        seed=config['seed']
+    )
+    
+    print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}")
     
     # Create data loaders
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['batch_size'],
+        train_dataset, 
+        batch_size=config['batch_size'], 
         shuffle=True,
         num_workers=TRAINING_CONFIG['num_workers']
     )
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=config['batch_size'],
+        val_dataset, 
+        batch_size=config['batch_size'], 
         shuffle=False,
         num_workers=TRAINING_CONFIG['num_workers']
     )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=config['batch_size'],
-        shuffle=False,
-        num_workers=TRAINING_CONFIG['num_workers']
-    )
-
-    # Compute normalization statistics from training set (for reporting consistency)
-    print("\nComputing target normalization statistics from training set...")
+    
+    # Compute normalization statistics from training set
+    print("\nComputing normalization statistics from training set...")
     train_targets = []
-    for data in train_dataset:
-        train_targets.append(data.y[0, config['target']].item())
-    train_targets = torch.tensor(train_targets, dtype=torch.float32)
+    for idx in train_dataset.indices:
+        data = full_dataset[idx]
+        if data.y.dim() == 1:
+            train_targets.append(data.y[target_index].item())
+        else:
+            train_targets.append(data.y[0, target_index].item())
+    
+    train_targets = torch.tensor(train_targets)
     target_mean = train_targets.mean().item()
     target_std = train_targets.std().item()
-    print(f"{target_names[config['target']]} mean: {target_mean:.6f}, std: {target_std:.6f}")
-
-    # Initialize model (using the wrapper to match checkpoint structure)
+    print(f"{target_name} mean: {target_mean:.4f}, std: {target_std:.4f}")
+    
+    # Convert to torch tensors on device
+    target_mean = torch.tensor(target_mean, device=device)
+    target_std = torch.tensor(target_std, device=device)
+    
+    # Initialize model
     print("\nInitializing SchNet model...")
     model = SchNetRegressor(
         hidden_channels=config['hidden_channels'],
         num_filters=config['num_filters'],
         num_interactions=config['num_interactions'],
         num_gaussians=config['num_gaussians'],
-        cutoff=config['cutoff'],
-        readout=config['readout']
+        cutoff=config['cutoff']
     ).to(device)
     
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -254,18 +287,19 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
             state_dict = checkpoint['model_state_dict']
         else:
             state_dict = checkpoint
-
-        # Two-body and QM9 now share the same wrapper structure
+        
+        # Both two-body and CrysMTM use same SchNet structure
+        # Keys should match directly - just load
         try:
             model.load_state_dict(state_dict, strict=True)
-            print("✓ Checkpoint loaded successfully (strict=True)")
+            print(">>> Checkpoint loaded successfully (strict=True)")
         except RuntimeError as e:
             print(f"Warning: Could not load with strict=True, trying strict=False...")
             print(f"Error: {e}")
             model.load_state_dict(state_dict, strict=False)
-            print("✓ Checkpoint loaded with strict=False (some parameters may not match)")
+            print(">>> Checkpoint loaded with strict=False (some parameters may not match)")
         
-        print(f"Fine-tuning from pre-trained two-body model\n")
+        print(f"Fine-tuning from pre-trained two-body SchNet model\n")
     elif config['train_from_scratch']:
         print("Training from scratch (randomly initialized weights)\n")
     else:
@@ -284,8 +318,8 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
         patience=TRAINING_CONFIG['scheduler_patience'], 
         min_lr=TRAINING_CONFIG['scheduler_min_lr']
     )
-    criterion = torch.nn.L1Loss()
-    
+    criterion = torch.nn.MSELoss()  # MSE for CrysMTM
+
     # Training loop
     print("\n" + "=" * 70)
     print("Starting Training")
@@ -293,7 +327,7 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     
     best_val_mae = float('inf')
     best_epoch = 0
-    history = {'train_loss': [], 'val_loss': [], 'val_mae': [], 'epoch_times': [], 'learning_rates': []}
+    history = {'train_loss': [], 'val_loss': [], 'val_mae': [], 'val_rmse': [], 'epoch_times': [], 'learning_rates': []}
     
     # Create save directory
     save_dir = Path(config['save_dir'])
@@ -303,10 +337,10 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
         start_time = time.time()
         
         # Train
-        train_loss = train_epoch(model, train_loader, optimizer, device, criterion, config['target'])
+        train_loss = train_epoch(model, train_loader, optimizer, device, criterion, target_index, target_mean, target_std)
         
         # Evaluate
-        val_loss, val_mae = evaluate(model, val_loader, device, criterion, config['target'])
+        val_loss, val_mae, val_rmse = evaluate(model, val_loader, device, criterion, target_index, target_mean, target_std)
         
         # Learning rate scheduling
         scheduler.step(val_mae)
@@ -318,6 +352,7 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
         history['train_loss'].append(float(train_loss))
         history['val_loss'].append(float(val_loss))
         history['val_mae'].append(float(val_mae))
+        history['val_rmse'].append(float(val_rmse))
         history['epoch_times'].append(float(epoch_time))
         history['learning_rates'].append(float(current_lr))
         
@@ -326,6 +361,7 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
               f"Train Loss: {train_loss:.4f} | "
               f"Val Loss: {val_loss:.4f} | "
               f"Val MAE: {val_mae:.4f} | "
+              f"Val RMSE: {val_rmse:.4f} | "
               f"Time: {epoch_time:.2f}s | "
               f"LR: {current_lr:.6f}")
         
@@ -339,8 +375,11 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_mae': val_mae,
+                'val_rmse': val_rmse,
                 'val_loss': val_loss,
-                'config': config
+                'config': config,
+                'target_mean': target_mean.item(),
+                'target_std': target_std.item()
             }, best_model_path)
             print(f"  → New best model saved! (MAE: {val_mae:.4f})")
         
@@ -348,10 +387,10 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
         if epoch - best_epoch > TRAINING_CONFIG['early_stopping_patience']:
             print(f"\nEarly stopping at epoch {epoch}")
             break
-    
-    # Test evaluation
+
+    # Final evaluation
     print("\n" + "=" * 70)
-    print("Final Evaluation on Test Set")
+    print("Final Evaluation")
     print("=" * 70)
     
     # Load best model
@@ -359,44 +398,43 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     checkpoint = torch.load(best_model_path, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     
-    test_loss, test_mae = evaluate(model, test_loader, device, criterion, config['target'])
-    
-    # Calculate RMSE
-    test_rmse = 0
-    for data in test_loader:
-        data = data.to(device)
-        out = model(data.z, data.pos, data.batch)
-        squared_errors = (out.squeeze() - data.y[:, config['target']]) ** 2
-        test_rmse += squared_errors.sum().item()
-    test_rmse = np.sqrt(test_rmse / len(test_loader.dataset))
+    # Evaluate on validation set
+    val_loss, val_mae, val_rmse = evaluate(model, val_loader, device, criterion, target_index, target_mean, target_std)
     
     print(f"\nBest Epoch: {checkpoint['epoch']}")
-    print(f"Test Loss: {test_loss:.4f}")
-    print(f"Test MAE: {test_mae:.4f}")
-    print(f"Test RMSE: {test_rmse:.4f}")
-    print(f"Target: {target_names[config['target']]}")
+    print(f"Val Loss: {val_loss:.4f}")
+    print(f"Val MAE: {val_mae:.4f}")
+    print(f"Val RMSE: {val_rmse:.4f}")
+    print(f"Target: {target_name}")
     print("\n" + "=" * 70)
     
     # Save results
     # Convert config to JSON-serializable format
     config_serializable = {k: (str(v) if isinstance(v, Path) else v) for k, v in config.items()}
     
+    # CrysMTM pipeline does not currently maintain a dedicated test split.
+    # For downstream reporting (e.g. LaTeX tables), expose the validation
+    # metrics under test_* keys as well.
     results = {
         'model_type': 'schnet',
-        'dataset': 'qm9',
-        'target': target_names[config['target']],
-        'target_idx': config['target'],
+        'dataset': 'crysmtm',
+        'target_name': target_name,
+        'target_index': target_index,
         'seed': config['seed'],
         'experiment_type': config['experiment_type'],
         'best_epoch': int(checkpoint['epoch']),
         'best_val_mae': float(checkpoint['val_mae']),
+        'best_val_rmse': float(checkpoint['val_rmse']),
         'best_val_loss': float(checkpoint['val_loss']),
-        'test_loss': float(test_loss),
-        'test_mae': float(test_mae),
-        'test_rmse': float(test_rmse),
+        'final_val_loss': float(val_loss),
+        'final_val_mae': float(val_mae),
+        'final_val_rmse': float(val_rmse),
+        'test_loss': float(val_loss),
+        'test_mae': float(val_mae),
+        'test_rmse': float(val_rmse),
         'normalization': {
-            'target_mean': float(target_mean),
-            'target_std': float(target_std),
+            'target_mean': float(target_mean.item()),
+            'target_std': float(target_std.item())
         },
         'config': config_serializable,
         'history': history,
@@ -414,13 +452,13 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     
     print(f"Results saved to {results_path}")
     
-    return model, test_mae
+    return model, val_mae
 
 
 def main():
     """
     Main function that runs all experiments:
-    - 3 targets: HOMO (2), LUMO (3), Gap (4)
+    - 3 targets: HOMO, LUMO, Eg
     - 3 seeds: 42, 123, 456
     - 2 types: from scratch AND fine-tuned
     - Total: 18 experiments (3 × 3 × 2)
@@ -428,31 +466,35 @@ def main():
     
     # Parse arguments
     parser = argparse.ArgumentParser(
-        description='Train SchNet on QM9 dataset for HOMO/LUMO/Gap prediction (both scratch and fine-tuned)'
+        description='Train SchNet on CrysMTM dataset for property prediction (both scratch and fine-tuned)'
     )
     parser.add_argument('--scratch-only', action='store_true',
                         help='Only train from scratch (skip fine-tuning)')
     parser.add_argument('--finetune-only', action='store_true',
                         help='Only fine-tune (skip from scratch)')
+    parser.add_argument('--targets', nargs='+', default=None,
+                        help='Specific targets to train on (default: all)')
     parser.add_argument('--batch-size', type=int, default=32,
                         help='Batch size (default: 32)')
     parser.add_argument('--epochs', type=int, default=50,
                         help='Number of epochs (default: 50)')
-    parser.add_argument('--lr', type=float, default=TRAINING_CONFIG['lr_scratch'],
-                        help=f"Learning rate for from-scratch (default: {TRAINING_CONFIG['lr_scratch']})")
-    parser.add_argument('--finetune-lr', type=float, default=TRAINING_CONFIG['lr_finetune'],
-                        help=f"Learning rate for fine-tuning (default: {TRAINING_CONFIG['lr_finetune']})")
+    parser.add_argument('--lr', type=float, default=TRAINING_CONFIG['lr'],
+                        help=f"Learning rate (default: {TRAINING_CONFIG['lr']})")
     parser.add_argument('--weight-decay', type=float, default=0.0,
                         help='Weight decay (default: 0.0)')
     
     args = parser.parse_args()
     
     # Define experiments from config
-    experiments = [(QM9_TARGETS[name], name) for name in ['homo', 'lumo', 'gap']]
+    if args.targets:
+        targets = [(TARGET_PROPERTIES.index(t), t) for t in args.targets if t in TARGET_PROPERTIES]
+    else:
+        targets = list(enumerate(TARGET_PROPERTIES))
+    
     seeds = SEEDS
     experiment_types = []
     
-    # Run fine-tune first, then scratch (better to start with transfer learning)
+    # Run fine-tune first, then scratch
     if not args.scratch_only:
         experiment_types.append('fine_tune')
     if not args.finetune_only:
@@ -462,56 +504,63 @@ def main():
         print("Error: Cannot skip both scratch and fine-tune!")
         return
     
-    total_experiments = len(experiments) * len(seeds) * len(experiment_types)
+    total_experiments = len(targets) * len(seeds) * len(experiment_types)
     
     print("\n" + "=" * 80)
-    print("QM9 BENCHMARK: SchNet on HOMO/LUMO/Gap")
+    print("CrysMTM BENCHMARK: SchNet on Property Prediction")
     print("=" * 80)
     print(f"\nExperiment Types: {', '.join(experiment_types)}")
-    print(f"Targets: {', '.join([name.upper() for _, name in experiments])}")
+    print(f"Targets: {', '.join([t[1] for t in targets])}")
     print(f"Seeds: {seeds}")
-    print(f"Total experiments: {len(experiments)} targets × {len(seeds)} seeds × {len(experiment_types)} types = {total_experiments}")
+    print(f"Data Split: {TRAINING_CONFIG['train_ratio']:.0%} train, {TRAINING_CONFIG['val_ratio']:.0%} val")
+    print(f"\nTwo-Body Transfer Learning Mapping:")
+    from benchmarks.crysmtm_config import TWOBODY_TARGET_MAP
+    for target in [t[1] for t in targets]:
+        twobody = TWOBODY_TARGET_MAP.get(target, 'N/A')
+        print(f"  {target} -> {twobody}")
+    print(f"\nTotal experiments: {len(targets)} targets × {len(seeds)} seeds × {len(experiment_types)} types = {total_experiments}")
     print("\n" + "=" * 80 + "\n")
     
     results_summary = []
     experiment_count = 0
     
-    for target_idx, target_name in experiments:
+    for target_index, target_name in targets:
         for seed in seeds:
             for exp_type in experiment_types:
                 experiment_count += 1
                 
                 print("\n" + "=" * 80)
-                print(f"EXPERIMENT {experiment_count}/{total_experiments}: {target_name.upper()} | Seed {seed} | {exp_type.upper()}")
+                print(f"EXPERIMENT {experiment_count}/{total_experiments}: {target_name} | Seed {seed} | {exp_type.upper()}")
                 print("=" * 80)
                 
                 # Get checkpoint path if fine-tuning
                 checkpoint_path = None
-                current_lr = args.lr
                 
                 if exp_type == 'fine_tune':
+                    # Map CrysMTM property to two-body property
+                    from benchmarks.crysmtm_config import TWOBODY_TARGET_MAP
+                    twobody_property = TWOBODY_TARGET_MAP.get(target_name)
                     checkpoint_path = get_checkpoint_path('schnet', target_name, seed)
-                    current_lr = args.finetune_lr
                     if checkpoint_path:
-                        print(f"Using checkpoint: {checkpoint_path}")
-                        print(f"Using lower learning rate for fine-tuning: {current_lr}")
+                        print(f"Using two-body checkpoint: {target_name} -> {twobody_property}")
+                        print(f"Checkpoint path: {checkpoint_path}")
                     else:
-                        print(f"⚠️  Warning: No checkpoint found, skipping fine-tune experiment")
+                        print(f"WARNING: No two-body checkpoint found for {target_name} ({twobody_property}), skipping fine-tune experiment")
                         continue
                 else:
                     print("Training from scratch (randomly initialized)")
                 
                 try:
                     # Run experiment
-                    model, test_mae = run_single_experiment(
-                        target_idx=target_idx,
+                    model, val_mae = run_single_experiment(
+                        target_index=target_index,
                         target_name=target_name,
                         seed=seed,
                         checkpoint_path=checkpoint_path,
                         experiment_type=exp_type,
                         batch_size=args.batch_size,
                         epochs=args.epochs,
-                        lr=current_lr,
+                        lr=args.lr,
                         weight_decay=args.weight_decay
                     )
                     
@@ -519,13 +568,13 @@ def main():
                         'target': target_name,
                         'seed': seed,
                         'type': exp_type,
-                        'test_mae': test_mae,
+                        'val_mae': val_mae,
                     })
                     
-                    print(f"\n✅ Completed: {target_name.upper()} seed {seed} {exp_type} | Test MAE: {test_mae:.4f}\n")
+                    print(f"\n>>> Completed: {target_name} seed {seed} {exp_type} | Val MAE: {val_mae:.4f}\n")
                     
                 except Exception as e:
-                    print(f"\n❌ Error in {target_name.upper()} seed {seed} {exp_type}: {e}\n")
+                    print(f"\nERROR in {target_name} seed {seed} {exp_type}: {e}\n")
                     import traceback
                     traceback.print_exc()
     
@@ -534,16 +583,16 @@ def main():
     print("FINAL SUMMARY")
     print("=" * 80)
     
-    for target_idx, target_name in experiments:
-        print(f"\n{target_name.upper()}:")
+    for target_index, target_name in targets:
+        print(f"\n{target_name}:")
         
         for exp_type in experiment_types:
             target_results = [r for r in results_summary if r['target'] == target_name and r['type'] == exp_type]
             if target_results:
-                maes = [r['test_mae'] for r in target_results]
+                maes = [r['val_mae'] for r in target_results]
                 print(f"  {exp_type.upper()}: {np.mean(maes):.4f} ± {np.std(maes):.4f}")
                 for r in target_results:
-                    print(f"    Seed {r['seed']}: {r['test_mae']:.4f}")
+                    print(f"    Seed {r['seed']}: {r['val_mae']:.4f}")
     
     print("\n" + "=" * 80)
     print(f"Completed {len(results_summary)}/{total_experiments} experiments!")
@@ -551,7 +600,7 @@ def main():
 
 
 if __name__ == '__main__':
-    # Check if PyTorch Geometric is installed
+    # Check dependencies
     try:
         import torch_geometric
         print(f"PyTorch Geometric version: {torch_geometric.__version__}")
@@ -561,5 +610,13 @@ if __name__ == '__main__':
         print("  pip install torch-geometric")
         exit(1)
     
+    try:
+        from torch_geometric.nn import SchNet
+        print(f"SchNet is available in PyTorch Geometric")
+    except ImportError:
+        print("ERROR: SchNet is not available in PyTorch Geometric!")
+        print("\nPlease update PyTorch Geometric")
+        exit(1)
+    
+    print("All dependencies satisfied\n")
     main()
-

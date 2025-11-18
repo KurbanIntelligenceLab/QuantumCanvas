@@ -4,6 +4,7 @@ visualizations
 analysis
 data
 results*
+analysis_codes/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

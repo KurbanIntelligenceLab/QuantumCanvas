@@ -1,17 +1,17 @@
 """
-QM9 SchNet Training Script
+QM9 FAENet Training Script
 
-Automatically trains SchNet on QM9 dataset for:
+Automatically trains FAENet on QM9 dataset for:
 - 3 targets: HOMO, LUMO, Gap
 - 3 seeds: 42, 123, 456
-- Option to fine-tune from two-body checkpoints or train from scratch
+- 2 types: from scratch AND fine-tuned
 """
 
 import torch
 import torch.nn as nn
 from torch_geometric.datasets import QM9
 from torch_geometric.loader import DataLoader
-from torch_geometric.nn import SchNet
+from faenet import FAENet
 import numpy as np
 import time
 import argparse
@@ -22,36 +22,6 @@ from benchmarks.qm9_config import (
 )
 
 
-class SchNetRegressor(nn.Module):
-    """SchNet wrapper matching the two-body training structure."""
-
-    def __init__(
-        self,
-        hidden_channels=16,
-        num_filters=16,
-        num_interactions=2,
-        num_gaussians=8,
-        cutoff=5.0,
-        readout="add",
-    ):
-        super().__init__()
-        self.schnet = SchNet(
-            hidden_channels=hidden_channels,
-            num_filters=num_filters,
-            num_interactions=num_interactions,
-            num_gaussians=num_gaussians,
-            cutoff=cutoff,
-            readout=readout,
-            dipole=False,
-            mean=None,
-            std=None,
-            atomref=None,
-        )
-
-    def forward(self, z, pos, batch):
-        return self.schnet(z, pos, batch)
-
-
 def train_epoch(model, loader, optimizer, device, criterion, target_idx=7):
     """Train for one epoch"""
     model.train()
@@ -59,10 +29,27 @@ def train_epoch(model, loader, optimizer, device, criterion, target_idx=7):
     
     for data in loader:
         data = data.to(device)
+        
+        # FAENet expects additional attributes that QM9 doesn't have
+        if not hasattr(data, 'atomic_numbers'):
+            data.atomic_numbers = data.z
+        
+        # Add dummy tags (all zeros) if not present
+        if not hasattr(data, 'tags'):
+            data.tags = torch.zeros_like(data.z)
+        
+        # Add fixed attribute if not present (for periodic systems, not needed for QM9)
+        if not hasattr(data, 'fixed'):
+            data.fixed = torch.zeros_like(data.z, dtype=torch.bool)
+        
         optimizer.zero_grad()
         
-        # Forward pass - SchNet returns graph-level predictions
-        out = model(data.z, data.pos, data.batch)
+        # Forward pass - FAENet may return dict or tensor
+        outputs = model(data)
+        if isinstance(outputs, dict):
+            out = outputs.get("energy", outputs.get("output", list(outputs.values())[0]))
+        else:
+            out = outputs
         
         # Compute loss
         loss = criterion(out.squeeze(), data.y[:, target_idx])
@@ -87,8 +74,24 @@ def evaluate(model, loader, device, criterion, target_idx=7):
     for data in loader:
         data = data.to(device)
         
+        # FAENet expects additional attributes that QM9 doesn't have
+        if not hasattr(data, 'atomic_numbers'):
+            data.atomic_numbers = data.z
+        
+        # Add dummy tags if not present
+        if not hasattr(data, 'tags'):
+            data.tags = torch.zeros_like(data.z)
+        
+        # Add fixed attribute if not present
+        if not hasattr(data, 'fixed'):
+            data.fixed = torch.zeros_like(data.z, dtype=torch.bool)
+        
         # Forward pass
-        out = model(data.z, data.pos, data.batch)
+        outputs = model(data)
+        if isinstance(outputs, dict):
+            out = outputs.get("energy", outputs.get("output", list(outputs.values())[0]))
+        else:
+            out = outputs
         
         # Compute loss
         loss = criterion(out.squeeze(), data.y[:, target_idx])
@@ -121,7 +124,7 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     """
     
     # Configuration - use standardized config
-    model_config = MODEL_CONFIGS['schnet']
+    model_config = MODEL_CONFIGS['faenet']
     config = {
         **TRAINING_CONFIG,  # Standardized training settings
         **model_config,     # Model architecture from qm9_config
@@ -130,7 +133,7 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
         'checkpoint_path': checkpoint_path,
         'train_from_scratch': checkpoint_path is None,
         'experiment_type': experiment_type,
-        'save_dir': f'results_qm9/{target_name}/schnet/seed_{seed}/{experiment_type}',
+        'save_dir': f'results_qm9/{target_name}/faenet/seed_{seed}/{experiment_type}',
         # Override with custom values if provided
         'batch_size': batch_size if batch_size != 32 else TRAINING_CONFIG['batch_size'],
         'epochs': epochs if epochs != 50 else TRAINING_CONFIG['epochs'],
@@ -162,9 +165,9 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     if config['checkpoint_path']:
         print(f"Fine-tuning from: {config['checkpoint_path']}")
     
-    print(f"\nSchNet Architecture:")
-    print(f"  hidden_channels={config['hidden_channels']}, num_filters={config['num_filters']}, "
-          f"num_interactions={config['num_interactions']}, num_gaussians={config['num_gaussians']}, cutoff={config['cutoff']}")
+    print(f"\nFAENet Architecture:")
+    print(f"  cutoff={config['cutoff']}, hidden_channels={config['hidden_channels']}, "
+          f"num_filters={config['num_filters']}, num_interactions={config['num_interactions']}, num_gaussians={config['num_gaussians']}")
     print(f"\nHyperparameters: batch_size={config['batch_size']}, epochs={config['epochs']}, "
           f"lr={config['lr']}, weight_decay={config['weight_decay']}")
     print()
@@ -183,10 +186,6 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     dataset = QM9(path)
     
     print(f"Dataset size: {len(dataset)} molecules")
-    print(f"Number of features per node: {dataset.num_features}")
-    print(f"Number of target properties: {dataset.num_classes}")
-    print(f"Example molecule: {dataset[0]}")
-    print()
     
     # Split dataset (standard QM9 split from config)
     train_size = QM9_SPLIT['train_size']
@@ -199,43 +198,48 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     
     # Create data loaders
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['batch_size'],
+        train_dataset, 
+        batch_size=config['batch_size'], 
         shuffle=True,
         num_workers=TRAINING_CONFIG['num_workers']
     )
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=config['batch_size'],
+        val_dataset, 
+        batch_size=config['batch_size'], 
         shuffle=False,
         num_workers=TRAINING_CONFIG['num_workers']
     )
     test_loader = DataLoader(
-        test_dataset,
-        batch_size=config['batch_size'],
+        test_dataset, 
+        batch_size=config['batch_size'], 
         shuffle=False,
         num_workers=TRAINING_CONFIG['num_workers']
     )
-
-    # Compute normalization statistics from training set (for reporting consistency)
-    print("\nComputing target normalization statistics from training set...")
-    train_targets = []
-    for data in train_dataset:
-        train_targets.append(data.y[0, config['target']].item())
-    train_targets = torch.tensor(train_targets, dtype=torch.float32)
-    target_mean = train_targets.mean().item()
-    target_std = train_targets.std().item()
-    print(f"{target_names[config['target']]} mean: {target_mean:.6f}, std: {target_std:.6f}")
-
-    # Initialize model (using the wrapper to match checkpoint structure)
-    print("\nInitializing SchNet model...")
-    model = SchNetRegressor(
-        hidden_channels=config['hidden_channels'],
-        num_filters=config['num_filters'],
-        num_interactions=config['num_interactions'],
-        num_gaussians=config['num_gaussians'],
+    
+    # Initialize model (using same architecture as models.py FAENetRegressor)
+    print("\nInitializing FAENet model...")
+    model = FAENet(
         cutoff=config['cutoff'],
-        readout=config['readout']
+        act="silu",
+        preprocess="base_preprocess",
+        complex_mp=False,
+        max_num_neighbors=20,
+        num_gaussians=config['num_gaussians'],
+        num_filters=config['num_filters'],
+        hidden_channels=config['hidden_channels'],
+        tag_hidden_channels=8,
+        pg_hidden_channels=8,
+        phys_hidden_channels=0,
+        phys_embeds=False,
+        num_interactions=config['num_interactions'],
+        mp_type="base",
+        graph_norm=True,
+        second_layer_MLP=False,
+        skip_co="add",
+        energy_head=None,
+        regress_forces=None,
+        force_decoder_type="mlp",
+        force_decoder_model_config={"hidden_channels": config['hidden_channels']},
     ).to(device)
     
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -254,15 +258,25 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
             state_dict = checkpoint['model_state_dict']
         else:
             state_dict = checkpoint
-
-        # Two-body and QM9 now share the same wrapper structure
+        
+        # Two-body models use FAENetRegressor wrapper (keys have "faenet." prefix)
+        # QM9 uses raw FAENet (keys don't have prefix)
+        # Strip the "faenet." prefix if present
+        cleaned_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith('faenet.'):
+                cleaned_state_dict[key.replace('faenet.', '', 1)] = value
+            else:
+                cleaned_state_dict[key] = value
+        
+        # Try to load the cleaned state dict
         try:
-            model.load_state_dict(state_dict, strict=True)
+            model.load_state_dict(cleaned_state_dict, strict=True)
             print("✓ Checkpoint loaded successfully (strict=True)")
         except RuntimeError as e:
             print(f"Warning: Could not load with strict=True, trying strict=False...")
             print(f"Error: {e}")
-            model.load_state_dict(state_dict, strict=False)
+            model.load_state_dict(cleaned_state_dict, strict=False)
             print("✓ Checkpoint loaded with strict=False (some parameters may not match)")
         
         print(f"Fine-tuning from pre-trained two-body model\n")
@@ -365,7 +379,24 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     test_rmse = 0
     for data in test_loader:
         data = data.to(device)
-        out = model(data.z, data.pos, data.batch)
+        
+        # FAENet expects additional attributes that QM9 doesn't have
+        if not hasattr(data, 'atomic_numbers'):
+            data.atomic_numbers = data.z
+        
+        # Add dummy tags if not present
+        if not hasattr(data, 'tags'):
+            data.tags = torch.zeros_like(data.z)
+        
+        # Add fixed attribute if not present
+        if not hasattr(data, 'fixed'):
+            data.fixed = torch.zeros_like(data.z, dtype=torch.bool)
+        
+        outputs = model(data)
+        if isinstance(outputs, dict):
+            out = outputs.get("energy", outputs.get("output", list(outputs.values())[0]))
+        else:
+            out = outputs
         squared_errors = (out.squeeze() - data.y[:, config['target']]) ** 2
         test_rmse += squared_errors.sum().item()
     test_rmse = np.sqrt(test_rmse / len(test_loader.dataset))
@@ -382,7 +413,7 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     config_serializable = {k: (str(v) if isinstance(v, Path) else v) for k, v in config.items()}
     
     results = {
-        'model_type': 'schnet',
+        'model_type': 'faenet',
         'dataset': 'qm9',
         'target': target_names[config['target']],
         'target_idx': config['target'],
@@ -394,10 +425,6 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
         'test_loss': float(test_loss),
         'test_mae': float(test_mae),
         'test_rmse': float(test_rmse),
-        'normalization': {
-            'target_mean': float(target_mean),
-            'target_std': float(target_std),
-        },
         'config': config_serializable,
         'history': history,
         'fine_tuned': not config['train_from_scratch'] and config['checkpoint_path'] is not None,
@@ -428,7 +455,7 @@ def main():
     
     # Parse arguments
     parser = argparse.ArgumentParser(
-        description='Train SchNet on QM9 dataset for HOMO/LUMO/Gap prediction (both scratch and fine-tuned)'
+        description='Train FAENet on QM9 dataset for HOMO/LUMO/Gap prediction (both scratch and fine-tuned)'
     )
     parser.add_argument('--scratch-only', action='store_true',
                         help='Only train from scratch (skip fine-tuning)')
@@ -465,7 +492,7 @@ def main():
     total_experiments = len(experiments) * len(seeds) * len(experiment_types)
     
     print("\n" + "=" * 80)
-    print("QM9 BENCHMARK: SchNet on HOMO/LUMO/Gap")
+    print("QM9 BENCHMARK: FAENet on HOMO/LUMO/Gap")
     print("=" * 80)
     print(f"\nExperiment Types: {', '.join(experiment_types)}")
     print(f"Targets: {', '.join([name.upper() for _, name in experiments])}")
@@ -490,7 +517,7 @@ def main():
                 current_lr = args.lr
                 
                 if exp_type == 'fine_tune':
-                    checkpoint_path = get_checkpoint_path('schnet', target_name, seed)
+                    checkpoint_path = get_checkpoint_path('faenet', target_name, seed)
                     current_lr = args.finetune_lr
                     if checkpoint_path:
                         print(f"Using checkpoint: {checkpoint_path}")

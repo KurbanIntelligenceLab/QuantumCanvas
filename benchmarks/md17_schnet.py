@@ -1,15 +1,16 @@
 """
-QM9 SchNet Training Script
+MD17 SchNet Training Script
 
-Automatically trains SchNet on QM9 dataset for:
-- 3 targets: HOMO, LUMO, Gap
+Automatically trains SchNet on MD17 dataset for:
+- 3 molecules: benzene, aspirin, ethanol
 - 3 seeds: 42, 123, 456
-- Option to fine-tune from two-body checkpoints or train from scratch
+- 2 types: from scratch AND fine-tuned (from two-body total_energy checkpoint)
+- Predicts: molecular energy
 """
 
 import torch
 import torch.nn as nn
-from torch_geometric.datasets import QM9
+from torch_geometric.datasets import MD17
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import SchNet
 import numpy as np
@@ -17,23 +18,14 @@ import time
 import argparse
 from pathlib import Path
 import json
-from benchmarks.qm9_config import (
-    TRAINING_CONFIG, QM9_SPLIT, QM9_TARGETS, SEEDS, MODEL_CONFIGS, get_checkpoint_path
+from benchmarks.md17_config import (
+    TRAINING_CONFIG, MD17_MOLECULES, SEEDS, MODEL_CONFIGS, get_checkpoint_path
 )
 
 
 class SchNetRegressor(nn.Module):
-    """SchNet wrapper matching the two-body training structure."""
-
-    def __init__(
-        self,
-        hidden_channels=16,
-        num_filters=16,
-        num_interactions=2,
-        num_gaussians=8,
-        cutoff=5.0,
-        readout="add",
-    ):
+    """SchNet wrapper matching the two-body training structure"""
+    def __init__(self, hidden_channels=16, num_filters=16, num_interactions=2, num_gaussians=8, cutoff=5.0, readout='add'):
         super().__init__()
         self.schnet = SchNet(
             hidden_channels=hidden_channels,
@@ -41,18 +33,15 @@ class SchNetRegressor(nn.Module):
             num_interactions=num_interactions,
             num_gaussians=num_gaussians,
             cutoff=cutoff,
-            readout=readout,
-            dipole=False,
-            mean=None,
-            std=None,
-            atomref=None,
+            readout=readout
         )
-
+    
     def forward(self, z, pos, batch):
+        # SchNet directly returns the final prediction
         return self.schnet(z, pos, batch)
 
 
-def train_epoch(model, loader, optimizer, device, criterion, target_idx=7):
+def train_epoch(model, loader, optimizer, device, criterion, mean, std):
     """Train for one epoch"""
     model.train()
     total_loss = 0
@@ -61,11 +50,14 @@ def train_epoch(model, loader, optimizer, device, criterion, target_idx=7):
         data = data.to(device)
         optimizer.zero_grad()
         
-        # Forward pass - SchNet returns graph-level predictions
+        # Forward pass - predict energy
         out = model(data.z, data.pos, data.batch)
         
-        # Compute loss
-        loss = criterion(out.squeeze(), data.y[:, target_idx])
+        # Normalize targets
+        targets_normalized = (data.energy.squeeze() - mean) / std
+        
+        # Compute loss on normalized values
+        loss = criterion(out.squeeze(), targets_normalized)
         
         # Backward pass
         loss.backward()
@@ -77,7 +69,7 @@ def train_epoch(model, loader, optimizer, device, criterion, target_idx=7):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, criterion, target_idx=7):
+def evaluate(model, loader, device, criterion, mean, std):
     """Evaluate the model"""
     model.eval()
     total_loss = 0
@@ -87,27 +79,32 @@ def evaluate(model, loader, device, criterion, target_idx=7):
     for data in loader:
         data = data.to(device)
         
-        # Forward pass
+        # Forward pass - model outputs normalized predictions
         out = model(data.z, data.pos, data.batch)
         
-        # Compute loss
-        loss = criterion(out.squeeze(), data.y[:, target_idx])
+        # Normalize targets for loss computation
+        targets_normalized = (data.energy.squeeze() - mean) / std
+        
+        # Compute loss on normalized values
+        loss = criterion(out.squeeze(), targets_normalized)
         total_loss += loss.item() * data.num_graphs
         
-        predictions.append(out.cpu().numpy())
-        targets.append(data.y[:, target_idx].cpu().numpy())
+        # Denormalize predictions for metric computation
+        out_denormalized = out * std + mean
+        
+        predictions.append(out_denormalized.cpu().numpy())
+        targets.append(data.energy.cpu().numpy())
     
     predictions = np.concatenate(predictions)
     targets = np.concatenate(targets)
     
+    # MAE on original scale
     mae = np.mean(np.abs(predictions - targets))
     
     return total_loss / len(loader.dataset), mae
 
 
-
-
-def run_single_experiment(target_idx: int, target_name: str, seed: int, 
+def run_single_experiment(molecule: str, seed: int, 
                           checkpoint_path: Path = None, 
                           experiment_type: str = 'scratch',
                           batch_size: int = 32, 
@@ -117,6 +114,7 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     """Run a single training experiment
     
     Args:
+        molecule: MD17 molecule name
         experiment_type: 'scratch' or 'fine_tune'
     """
     
@@ -124,13 +122,13 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     model_config = MODEL_CONFIGS['schnet']
     config = {
         **TRAINING_CONFIG,  # Standardized training settings
-        **model_config,     # Model architecture from qm9_config
-        'target': target_idx,
+        **model_config,     # Model architecture from md17_config
+        'molecule': molecule,
         'seed': seed,
         'checkpoint_path': checkpoint_path,
         'train_from_scratch': checkpoint_path is None,
         'experiment_type': experiment_type,
-        'save_dir': f'results_qm9/{target_name}/schnet/seed_{seed}/{experiment_type}',
+        'save_dir': f'results_md17/{molecule}/schnet/seed_{seed}/{experiment_type}',
         # Override with custom values if provided
         'batch_size': batch_size if batch_size != 32 else TRAINING_CONFIG['batch_size'],
         'epochs': epochs if epochs != 50 else TRAINING_CONFIG['epochs'],
@@ -138,23 +136,7 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
         'weight_decay': weight_decay,
     }
     
-    # Target property names
-    target_names = [
-        'dipole_moment',      # 0: Dipole moment (D)
-        'isotropic_polarizability',  # 1: Isotropic polarizability (Bohr^3)
-        'homo',               # 2: HOMO energy (eV)
-        'lumo',               # 3: LUMO energy (eV)
-        'gap',                # 4: HOMO-LUMO gap (eV)
-        'electronic_spatial_extent',  # 5: Electronic spatial extent (Bohr^2)
-        'zpve',               # 6: Zero point vibrational energy (eV)
-        'U0',                 # 7: Internal energy at 0K (eV)
-        'U',                  # 8: Internal energy at 298.15K (eV)
-        'H',                  # 9: Enthalpy at 298.15K (eV)
-        'G',                  # 10: Free energy at 298.15K (eV)
-        'Cv',                 # 11: Heat capacity at 298.15K (cal/mol/K)
-    ]
-    
-    print(f"\nTarget Property: {target_names[config['target']]} (index {config['target']})")
+    print(f"\nMolecule: {molecule.upper()}")
     print(f"Experiment Type: {config['experiment_type'].upper()}")
     print(f"Seed: {config['seed']}")
     print(f"Save Directory: {config['save_dir']}")
@@ -173,61 +155,61 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     torch.manual_seed(config['seed'])
     np.random.seed(config['seed'])
     
-    # Device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}\n")
+    # Device - Force CPU due to torch_cluster CUDA compilation issues
+    # TODO: Use CUDA once torch_cluster is properly compiled
+    device = torch.device('cpu')
+    print(f"Using device: {device} (forced CPU due to torch_cluster compatibility)\n")
     
-    # Load QM9 dataset
-    print("Loading QM9 dataset...")
-    path = './data/QM9'
-    dataset = QM9(path)
+    # Load MD17 dataset
+    print(f"Loading MD17 dataset for {molecule}...")
+    path = './data/MD17'
+    dataset = MD17(path, name=molecule)
     
-    print(f"Dataset size: {len(dataset)} molecules")
-    print(f"Number of features per node: {dataset.num_features}")
-    print(f"Number of target properties: {dataset.num_classes}")
-    print(f"Example molecule: {dataset[0]}")
-    print()
+    print(f"Dataset size: {len(dataset)} conformations")
     
-    # Split dataset (standard QM9 split from config)
-    train_size = QM9_SPLIT['train_size']
-    val_size = QM9_SPLIT['val_size']
+    # Split dataset
+    train_size = config['train_size']
+    val_size = config['val_size']
+    test_size = 1000  # Limit test set to 1000 samples
+    
     train_dataset = dataset[:train_size]
     val_dataset = dataset[train_size:train_size + val_size]
-    test_dataset = dataset[train_size + val_size:]
+    test_dataset = dataset[train_size + val_size:train_size + val_size + test_size]
     
-    print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
+    print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)} (limited to {test_size})")
     
     # Create data loaders
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['batch_size'],
+        train_dataset, 
+        batch_size=config['batch_size'], 
         shuffle=True,
         num_workers=TRAINING_CONFIG['num_workers']
     )
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=config['batch_size'],
+        val_dataset, 
+        batch_size=config['batch_size'], 
         shuffle=False,
         num_workers=TRAINING_CONFIG['num_workers']
     )
     test_loader = DataLoader(
-        test_dataset,
-        batch_size=config['batch_size'],
+        test_dataset, 
+        batch_size=config['batch_size'], 
         shuffle=False,
         num_workers=TRAINING_CONFIG['num_workers']
     )
-
-    # Compute normalization statistics from training set (for reporting consistency)
-    print("\nComputing target normalization statistics from training set...")
-    train_targets = []
-    for data in train_dataset:
-        train_targets.append(data.y[0, config['target']].item())
-    train_targets = torch.tensor(train_targets, dtype=torch.float32)
-    target_mean = train_targets.mean().item()
-    target_std = train_targets.std().item()
-    print(f"{target_names[config['target']]} mean: {target_mean:.6f}, std: {target_std:.6f}")
-
-    # Initialize model (using the wrapper to match checkpoint structure)
+    
+    # Compute normalization statistics from training set
+    print("\nComputing normalization statistics from training set...")
+    train_energies = torch.cat([data.energy for data in train_dataset])
+    energy_mean = train_energies.mean().item()
+    energy_std = train_energies.std().item()
+    print(f"Energy mean: {energy_mean:.4f}, std: {energy_std:.4f}")
+    
+    # Convert to torch tensors on device
+    energy_mean = torch.tensor(energy_mean, device=device)
+    energy_std = torch.tensor(energy_std, device=device)
+    
+    # Initialize model
     print("\nInitializing SchNet model...")
     model = SchNetRegressor(
         hidden_channels=config['hidden_channels'],
@@ -254,18 +236,19 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
             state_dict = checkpoint['model_state_dict']
         else:
             state_dict = checkpoint
-
-        # Two-body and QM9 now share the same wrapper structure
+        
+        # Both two-body and MD17 use same SchNetRegressor wrapper structure
+        # Keys should match directly - just load
         try:
             model.load_state_dict(state_dict, strict=True)
-            print("✓ Checkpoint loaded successfully (strict=True)")
+            print(">>> Checkpoint loaded successfully (strict=True)")
         except RuntimeError as e:
             print(f"Warning: Could not load with strict=True, trying strict=False...")
             print(f"Error: {e}")
             model.load_state_dict(state_dict, strict=False)
-            print("✓ Checkpoint loaded with strict=False (some parameters may not match)")
+            print(">>> Checkpoint loaded with strict=False (some parameters may not match)")
         
-        print(f"Fine-tuning from pre-trained two-body model\n")
+        print(f"Fine-tuning from pre-trained two-body SchNet model\n")
     elif config['train_from_scratch']:
         print("Training from scratch (randomly initialized weights)\n")
     else:
@@ -303,10 +286,10 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
         start_time = time.time()
         
         # Train
-        train_loss = train_epoch(model, train_loader, optimizer, device, criterion, config['target'])
+        train_loss = train_epoch(model, train_loader, optimizer, device, criterion, energy_mean, energy_std)
         
         # Evaluate
-        val_loss, val_mae = evaluate(model, val_loader, device, criterion, config['target'])
+        val_loss, val_mae = evaluate(model, val_loader, device, criterion, energy_mean, energy_std)
         
         # Learning rate scheduling
         scheduler.step(val_mae)
@@ -340,7 +323,9 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_mae': val_mae,
                 'val_loss': val_loss,
-                'config': config
+                'config': config,
+                'energy_mean': energy_mean.item(),
+                'energy_std': energy_std.item()
             }, best_model_path)
             print(f"  → New best model saved! (MAE: {val_mae:.4f})")
         
@@ -359,22 +344,26 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     checkpoint = torch.load(best_model_path, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     
-    test_loss, test_mae = evaluate(model, test_loader, device, criterion, config['target'])
+    test_loss, test_mae = evaluate(model, test_loader, device, criterion, energy_mean, energy_std)
     
-    # Calculate RMSE
+    # Calculate RMSE on denormalized predictions
     test_rmse = 0
-    for data in test_loader:
-        data = data.to(device)
-        out = model(data.z, data.pos, data.batch)
-        squared_errors = (out.squeeze() - data.y[:, config['target']]) ** 2
-        test_rmse += squared_errors.sum().item()
+    model.eval()
+    with torch.no_grad():
+        for data in test_loader:
+            data = data.to(device)
+            out = model(data.z, data.pos, data.batch)
+            # Denormalize predictions
+            out_denormalized = out * energy_std + energy_mean
+            squared_errors = (out_denormalized.squeeze() - data.energy.squeeze()) ** 2
+            test_rmse += squared_errors.sum().item()
     test_rmse = np.sqrt(test_rmse / len(test_loader.dataset))
     
     print(f"\nBest Epoch: {checkpoint['epoch']}")
     print(f"Test Loss: {test_loss:.4f}")
     print(f"Test MAE: {test_mae:.4f}")
     print(f"Test RMSE: {test_rmse:.4f}")
-    print(f"Target: {target_names[config['target']]}")
+    print(f"Molecule: {molecule}")
     print("\n" + "=" * 70)
     
     # Save results
@@ -383,9 +372,8 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
     
     results = {
         'model_type': 'schnet',
-        'dataset': 'qm9',
-        'target': target_names[config['target']],
-        'target_idx': config['target'],
+        'dataset': 'md17',
+        'molecule': molecule,
         'seed': config['seed'],
         'experiment_type': config['experiment_type'],
         'best_epoch': int(checkpoint['epoch']),
@@ -395,8 +383,8 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
         'test_mae': float(test_mae),
         'test_rmse': float(test_rmse),
         'normalization': {
-            'target_mean': float(target_mean),
-            'target_std': float(target_std),
+            'energy_mean': float(energy_mean.item()),
+            'energy_std': float(energy_std.item())
         },
         'config': config_serializable,
         'history': history,
@@ -420,7 +408,7 @@ def run_single_experiment(target_idx: int, target_name: str, seed: int,
 def main():
     """
     Main function that runs all experiments:
-    - 3 targets: HOMO (2), LUMO (3), Gap (4)
+    - 3 molecules: benzene, aspirin, ethanol
     - 3 seeds: 42, 123, 456
     - 2 types: from scratch AND fine-tuned
     - Total: 18 experiments (3 × 3 × 2)
@@ -428,7 +416,7 @@ def main():
     
     # Parse arguments
     parser = argparse.ArgumentParser(
-        description='Train SchNet on QM9 dataset for HOMO/LUMO/Gap prediction (both scratch and fine-tuned)'
+        description='Train SchNet on MD17 dataset for energy prediction (both scratch and fine-tuned)'
     )
     parser.add_argument('--scratch-only', action='store_true',
                         help='Only train from scratch (skip fine-tuning)')
@@ -448,11 +436,11 @@ def main():
     args = parser.parse_args()
     
     # Define experiments from config
-    experiments = [(QM9_TARGETS[name], name) for name in ['homo', 'lumo', 'gap']]
+    molecules = MD17_MOLECULES
     seeds = SEEDS
     experiment_types = []
     
-    # Run fine-tune first, then scratch (better to start with transfer learning)
+    # Run fine-tune first, then scratch
     if not args.scratch_only:
         experiment_types.append('fine_tune')
     if not args.finetune_only:
@@ -462,27 +450,28 @@ def main():
         print("Error: Cannot skip both scratch and fine-tune!")
         return
     
-    total_experiments = len(experiments) * len(seeds) * len(experiment_types)
+    total_experiments = len(molecules) * len(seeds) * len(experiment_types)
     
     print("\n" + "=" * 80)
-    print("QM9 BENCHMARK: SchNet on HOMO/LUMO/Gap")
+    print("MD17 BENCHMARK: SchNet on Energy Prediction")
     print("=" * 80)
     print(f"\nExperiment Types: {', '.join(experiment_types)}")
-    print(f"Targets: {', '.join([name.upper() for _, name in experiments])}")
+    print(f"Molecules: {', '.join([m.upper() for m in molecules])}")
     print(f"Seeds: {seeds}")
-    print(f"Total experiments: {len(experiments)} targets × {len(seeds)} seeds × {len(experiment_types)} types = {total_experiments}")
+    print(f"Data Split: {TRAINING_CONFIG['train_size']} train, {TRAINING_CONFIG['val_size']} val, rest test")
+    print(f"Total experiments: {len(molecules)} molecules × {len(seeds)} seeds × {len(experiment_types)} types = {total_experiments}")
     print("\n" + "=" * 80 + "\n")
     
     results_summary = []
     experiment_count = 0
     
-    for target_idx, target_name in experiments:
+    for molecule in molecules:
         for seed in seeds:
             for exp_type in experiment_types:
                 experiment_count += 1
                 
                 print("\n" + "=" * 80)
-                print(f"EXPERIMENT {experiment_count}/{total_experiments}: {target_name.upper()} | Seed {seed} | {exp_type.upper()}")
+                print(f"EXPERIMENT {experiment_count}/{total_experiments}: {molecule.upper()} | Seed {seed} | {exp_type.upper()}")
                 print("=" * 80)
                 
                 # Get checkpoint path if fine-tuning
@@ -490,13 +479,13 @@ def main():
                 current_lr = args.lr
                 
                 if exp_type == 'fine_tune':
-                    checkpoint_path = get_checkpoint_path('schnet', target_name, seed)
+                    checkpoint_path = get_checkpoint_path('schnet', molecule, seed)
                     current_lr = args.finetune_lr
                     if checkpoint_path:
                         print(f"Using checkpoint: {checkpoint_path}")
                         print(f"Using lower learning rate for fine-tuning: {current_lr}")
                     else:
-                        print(f"⚠️  Warning: No checkpoint found, skipping fine-tune experiment")
+                        print(f"WARNING: No checkpoint found, skipping fine-tune experiment")
                         continue
                 else:
                     print("Training from scratch (randomly initialized)")
@@ -504,8 +493,7 @@ def main():
                 try:
                     # Run experiment
                     model, test_mae = run_single_experiment(
-                        target_idx=target_idx,
-                        target_name=target_name,
+                        molecule=molecule,
                         seed=seed,
                         checkpoint_path=checkpoint_path,
                         experiment_type=exp_type,
@@ -516,16 +504,16 @@ def main():
                     )
                     
                     results_summary.append({
-                        'target': target_name,
+                        'molecule': molecule,
                         'seed': seed,
                         'type': exp_type,
                         'test_mae': test_mae,
                     })
                     
-                    print(f"\n✅ Completed: {target_name.upper()} seed {seed} {exp_type} | Test MAE: {test_mae:.4f}\n")
+                    print(f"\n>>> Completed: {molecule.upper()} seed {seed} {exp_type} | Test MAE: {test_mae:.4f}\n")
                     
                 except Exception as e:
-                    print(f"\n❌ Error in {target_name.upper()} seed {seed} {exp_type}: {e}\n")
+                    print(f"\nERROR in {molecule.upper()} seed {seed} {exp_type}: {e}\n")
                     import traceback
                     traceback.print_exc()
     
@@ -534,15 +522,15 @@ def main():
     print("FINAL SUMMARY")
     print("=" * 80)
     
-    for target_idx, target_name in experiments:
-        print(f"\n{target_name.upper()}:")
+    for molecule in molecules:
+        print(f"\n{molecule.upper()}:")
         
         for exp_type in experiment_types:
-            target_results = [r for r in results_summary if r['target'] == target_name and r['type'] == exp_type]
-            if target_results:
-                maes = [r['test_mae'] for r in target_results]
+            mol_results = [r for r in results_summary if r['molecule'] == molecule and r['type'] == exp_type]
+            if mol_results:
+                maes = [r['test_mae'] for r in mol_results]
                 print(f"  {exp_type.upper()}: {np.mean(maes):.4f} ± {np.std(maes):.4f}")
-                for r in target_results:
+                for r in mol_results:
                     print(f"    Seed {r['seed']}: {r['test_mae']:.4f}")
     
     print("\n" + "=" * 80)
