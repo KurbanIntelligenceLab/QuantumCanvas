@@ -172,7 +172,6 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
     n_samples = len(temp_dataset)
     n_train = int(cfg.train_split * n_samples)
     n_val = int(cfg.val_split * n_samples)
-    n_test = n_samples - n_train - n_val
     
     indices = torch.randperm(n_samples, generator=torch.Generator().manual_seed(seed))
     train_indices = indices[:n_train].tolist()
@@ -409,9 +408,9 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
     history_df.to_csv(save_dir / 'training_history.csv', index=False)
     
     print(f"\nResults saved to {save_dir}")
-    print(f"  - best_model.pt (checkpoint)")
-    print(f"  - results.json (metrics)")
-    print(f"  - training_history.csv (epoch-by-epoch)")
+    print("  - best_model.pt (checkpoint)")
+    print("  - results.json (metrics)")
+    print("  - training_history.csv (epoch-by-epoch)")
     
     return results
 
@@ -422,7 +421,7 @@ def run_single_experiment(seed: int, target: str, device: torch.device,
     print("\n" + "=" * 70)
     print(f"EXPERIMENT: Target={target}, Seed={seed}")
     print("=" * 70)
-    print(f"Configuration:")
+    print("Configuration:")
     print(f"  Dataset: {dataset_path}")
     print(f"  Target: {target}")
     print(f"  Seed: {seed}")
@@ -473,7 +472,7 @@ def run_single_experiment(seed: int, target: str, device: torch.device,
                 'models': all_results
             }, f, indent=2)
         
-        print(f"\n✓ Experiment complete!")
+        print("\n✓ Experiment complete!")
         print(f"  Summary: {summary_path}")
     else:
         print(f"\n❌ No models successfully trained for target={target}, seed={seed}")
@@ -547,12 +546,12 @@ def main():
             'results': global_results
         }, f, indent=2)
     
-    print(f"\n✓ All benchmarks complete!")
+    print("\n✓ All benchmarks complete!")
     print(f"  Total experiments: {experiment_count}")
     print(f"  Comprehensive summary: {comprehensive_summary_path}")
-    print(f"\nResults directory structure:")
-    print(f"  results_twobody/")
-    print(f"    ├── comprehensive_benchmark_summary.json")
+    print("\nResults directory structure:")
+    print("  results_twobody/")
+    print("    ├── comprehensive_benchmark_summary.json")
     for target in cfg.targets[:2]:
         print(f"    ├── {target}/")
         for seed in cfg.seeds[:2]:
@@ -561,12 +560,12 @@ def main():
             print(f"    │   ├── {model}/")
             for seed in cfg.seeds[:2]:
                 print(f"    │   │   ├── seed_{seed}/")
-                print(f"    │   │   │   ├── best_model.pt")
-                print(f"    │   │   │   ├── results.json")
-                print(f"    │   │   │   └── training_history.csv")
-            print(f"    │   │   └── ...")
-        print(f"    │   └── ...")
-    print(f"    └── ...")
+                print("    │   │   │   ├── best_model.pt")
+                print("    │   │   │   ├── results.json")
+                print("    │   │   │   └── training_history.csv")
+            print("    │   │   └── ...")
+        print("    │   └── ...")
+    print("    └── ...")
 
 
 if __name__ == '__main__':

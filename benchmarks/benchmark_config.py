@@ -493,13 +493,13 @@ class BenchmarkConfig:
         print("BENCHMARK CONFIGURATION SUMMARY")
         print("=" * 70)
         
-        print(f"\n🎯 Experiment Design:")
+        print("\n🎯 Experiment Design:")
         print(f"  Targets: {len(self.experiment.targets)} ({', '.join(self.experiment.targets)})")
         print(f"  Seeds: {len(self.experiment.seeds)} ({', '.join(map(str, self.experiment.seeds))})")
         print(f"  Total experiments: {self.experiment.total_experiments}")
         print(f"  Available models: {len(self.models.available_models)}")
         
-        print(f"\n⚙️  Training Settings:")
+        print("\n⚙️  Training Settings:")
         print(f"  Batch size: {self.training.batch_size}")
         print(f"  Epochs: {self.training.epochs}")
         print(f"  Learning rate: {self.training.lr}")
@@ -510,12 +510,12 @@ class BenchmarkConfig:
         print(f"  Loss: {self.loss_function}")
         print(f"  Device: {self.device}")
         
-        print(f"\n📊 Data Configuration:")
+        print("\n📊 Data Configuration:")
         print(f"  Dataset: {self.data.dataset_path}")
         print(f"  Train/Val/Test split: {self.data.train_split}/{self.data.val_split}/{self.data.test_split:.2f}")
         print(f"  Num workers: {self.data.num_workers}")
         
-        print(f"\n🤖 Models:")
+        print("\n🤖 Models:")
         for model_name in self.models.available_models:
             print(f"  - {model_name}")
         print("=" * 70)

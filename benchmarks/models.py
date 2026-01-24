@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import SchNet
 from faenet import FAENet
-from gotennet import GotenNetWrapper
-from gotennet.models.components.layers import CosineCutoff
+# from gotennet import GotenNetWrapper
+# from gotennet.models.components.layers import CosineCutoff
 import torchvision.models as models
 from torchvision.models import ResNet18_Weights
 
@@ -139,41 +139,41 @@ class FAENetRegressor(nn.Module):
         
         return batch
 
-class GotenNetRegressor(nn.Module):
-    def __init__(self, n_atom_basis=32, n_interactions=2, cutoff=5.0, num_heads=2, n_rbf=4):
-        super().__init__()
-        self.gotennet = GotenNetWrapper(
-            n_atom_basis=n_atom_basis,
-            n_interactions=n_interactions,
-            cutoff_fn=CosineCutoff(cutoff),
-            num_heads=num_heads,
-            n_rbf=n_rbf
-        )
-        # Add a final regression layer for band gap prediction
-        self.regressor = nn.Linear(n_atom_basis, 1)
+# class GotenNetRegressor(nn.Module):
+#     def __init__(self, n_atom_basis=32, n_interactions=2, cutoff=5.0, num_heads=2, n_rbf=4):
+#         super().__init__()
+#         self.gotennet = GotenNetWrapper(
+#             n_atom_basis=n_atom_basis,
+#             n_interactions=n_interactions,
+#             cutoff_fn=CosineCutoff(cutoff),
+#             num_heads=num_heads,
+#             n_rbf=n_rbf
+#         )
+#         # Add a final regression layer for band gap prediction
+#         self.regressor = nn.Linear(n_atom_basis, 1)
     
-    def forward(self, z, pos, batch):
-        # Create input dictionary for GotenNet
-        from torch_geometric.data import Data
-        data = Data(z=z, pos=pos, batch=batch)
+#     def forward(self, z, pos, batch):
+#         # Create input dictionary for GotenNet
+#         from torch_geometric.data import Data
+#         data = Data(z=z, pos=pos, batch=batch)
         
-        # Get GotenNet embeddings - returns tuple (h, X)
-        h, X = self.gotennet(data)
+#         # Get GotenNet embeddings - returns tuple (h, X)
+#         h, X = self.gotennet(data)
         
-        # Use the scalar features h for regression
-        # Global mean pooling
-        if batch is None:
-            x = torch.mean(h, dim=0, keepdim=True)
-        else:
-            # Use scatter_mean for proper batch handling
-            try:
-                from torch_scatter import scatter_mean
-                x = scatter_mean(h, batch, dim=0)
-            except ImportError:
-                # Fallback to simple mean if torch_scatter not available
-                x = torch.mean(h, dim=0, keepdim=True)
-        # Final regression
-        return self.regressor(x).squeeze()
+#         # Use the scalar features h for regression
+#         # Global mean pooling
+#         if batch is None:
+#             x = torch.mean(h, dim=0, keepdim=True)
+#         else:
+#             # Use scatter_mean for proper batch handling
+#             try:
+#                 from torch_scatter import scatter_mean
+#                 x = scatter_mean(h, batch, dim=0)
+#             except ImportError:
+#                 # Fallback to simple mean if torch_scatter not available
+#                 x = torch.mean(h, dim=0, keepdim=True)
+#         # Final regression
+#         return self.regressor(x).squeeze()
 
 class EGNNRegressor(nn.Module):
     def __init__(self, n_layers=3, feats_dim=1, pos_dim=3, m_dim=128, update_coors=True, update_feats=True, norm_feats=True, norm_coors=False, dropout=0.0, coor_weights_clamp_value=2.0):
@@ -545,7 +545,7 @@ def get_model(model_type, **kwargs):
     models = {
         'schnet': SchNetRegressor,
         'faenet': FAENetRegressor,
-        'gotennet': GotenNetRegressor,
+        # 'gotennet': GotenNetRegressor,
         'egnn': EGNNRegressor,
         'gatv2': GATv2Regressor,
         'dimenet': DimeNetRegressor,

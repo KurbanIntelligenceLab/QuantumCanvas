@@ -144,7 +144,7 @@ def run_single_experiment(molecule: str, seed: int,
     if config['checkpoint_path']:
         print(f"Fine-tuning from: {config['checkpoint_path']}")
     
-    print(f"\nSchNet Architecture:")
+    print("\nSchNet Architecture:")
     print(f"  hidden_channels={config['hidden_channels']}, num_filters={config['num_filters']}, "
           f"num_interactions={config['num_interactions']}, num_gaussians={config['num_gaussians']}, cutoff={config['cutoff']}")
     print(f"\nHyperparameters: batch_size={config['batch_size']}, epochs={config['epochs']}, "
@@ -243,12 +243,12 @@ def run_single_experiment(molecule: str, seed: int,
             model.load_state_dict(state_dict, strict=True)
             print(">>> Checkpoint loaded successfully (strict=True)")
         except RuntimeError as e:
-            print(f"Warning: Could not load with strict=True, trying strict=False...")
+            print("Warning: Could not load with strict=True, trying strict=False...")
             print(f"Error: {e}")
             model.load_state_dict(state_dict, strict=False)
             print(">>> Checkpoint loaded with strict=False (some parameters may not match)")
         
-        print(f"Fine-tuning from pre-trained two-body SchNet model\n")
+        print("Fine-tuning from pre-trained two-body SchNet model\n")
     elif config['train_from_scratch']:
         print("Training from scratch (randomly initialized weights)\n")
     else:
@@ -485,7 +485,7 @@ def main():
                         print(f"Using checkpoint: {checkpoint_path}")
                         print(f"Using lower learning rate for fine-tuning: {current_lr}")
                     else:
-                        print(f"WARNING: No checkpoint found, skipping fine-tune experiment")
+                        print("WARNING: No checkpoint found, skipping fine-tune experiment")
                         continue
                 else:
                     print("Training from scratch (randomly initialized)")
