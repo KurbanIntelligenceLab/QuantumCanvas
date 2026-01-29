@@ -107,5 +107,43 @@ Splits: **by_electronegativity**, **by_period**, **held_out_pairs**. Targets: di
 
 ---
 
+## 4. Channel Permutation Importance (100 epochs)
+
+**Source:** `rebuttal_results_100_epochs/channel_permutation_report.txt`  
+Quantumshellnet; metrics averaged over 3 seeds. Reported: baseline MAE/RMSE and mean|ΔMAE| / mean|ΔRMSE| when input channels are permuted (sensitivity per channel).
+
+### Channel importance (% of total sensitivity, averaged over targets and over MAE/RMSE)
+
+Per target, each channel’s share of total |ΔMAE| (and |ΔRMSE|) is computed so the 10 channels sum to 100%; then averaged over all 20 targets and over both losses.
+
+| Channel | MAE % | RMSE % | Avg % |
+|---------|-------|--------|-------|
+| ch_0 | 10.8 | 11.3 | 11.1 |
+| ch_1 | 0.0 | 0.0 | 0.0 |
+| ch_2 | 12.7 | 12.0 | 12.4 |
+| ch_3 | 12.3 | 13.2 | 12.8 |
+| ch_4 | 17.3 | 17.8 | 17.6 |
+| ch_5 | 2.4 | 1.6 | 2.0 |
+| ch_6 | 11.5 | 11.0 | 11.2 |
+| ch_7 | 20.7 | 22.6 | 21.6 |
+| ch_8 | 6.0 | 5.4 | 5.7 |
+| ch_9 | 6.2 | 5.1 | 5.7 |
+
+ch_7 is most important (~22%), ch_4 next (~18%); ch_1 is negligible (~0%).
+
+### Summary: mean|ΔMAE| and mean|ΔRMSE| per target (quantumshellnet)
+
+| Target | baseline MAE | baseline RMSE | mean\|ΔMAE\| | mean\|ΔRMSE\| |
+|--------|--------------|---------------|--------------|---------------|
+| dipole_mag_d | 0.8353 | 0.9154 | 0.1359 | 0.1788 |
+| e_g_ev | 1.6142 | 2.0061 | 0.0255 | 0.0375 |
+| e_homo_ev | 1.0323 | 1.2749 | 0.0566 | 0.0627 |
+| e_lumo_ev | 1.2655 | 1.5648 | 0.0749 | 0.0988 |
+| total_energy_ev | 18.7593 | 28.7858 | 3.5862 | 3.2946 |
+
+Full per-target and per-channel importance (all 20 targets, ch_0–ch_9) are in `rebuttal_results_100_epochs/channel_permutation_report.txt`.
+
+---
+
 *All values from `rebuttal_results_100_epochs` (100 epochs; subset of targets). Validate with:  
 `python rebuttal_results/validate_rebuttal_results_md.py --dir rebuttal_results_100_epochs`*
