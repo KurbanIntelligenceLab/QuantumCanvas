@@ -11,6 +11,8 @@ Split strategies:
 2. by_period: Train on lighter elements (periods 1-4), test on heavier (periods 5-7)
 3. by_type: Train on metal-metal pairs, test on metal-nonmetal pairs
 4. by_electronegativity: Train on similar-EN pairs, test on high-EN-difference pairs
+5. by_bond_distance: Train on short bonds, test on long bonds (quantum interactions vary with distance)
+6. by_period_difference: Train on same-period pairs, test on different-period pairs
 
 Usage:
     python rebuttal_experiments/modality/ood_composition_split.py
@@ -84,6 +86,33 @@ METALS = {
     'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er', 'Tm', 'Yb',
     'Lu', 'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb',
     'Bi', 'Po', 'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U', 'Np', 'Pu'
+}
+
+# Periodic table groups (main group elements)
+ELEMENT_GROUP = {
+    # Group 1 (Alkali metals)
+    'H': 1, 'Li': 1, 'Na': 1, 'K': 1, 'Rb': 1, 'Cs': 1, 'Fr': 1,
+    # Group 2 (Alkaline earth)
+    'Be': 2, 'Mg': 2, 'Ca': 2, 'Sr': 2, 'Ba': 2, 'Ra': 2,
+    # Group 13 (Boron group)
+    'B': 13, 'Al': 13, 'Ga': 13, 'In': 13, 'Tl': 13,
+    # Group 14 (Carbon group)
+    'C': 14, 'Si': 14, 'Ge': 14, 'Sn': 14, 'Pb': 14,
+    # Group 15 (Nitrogen group)
+    'N': 15, 'P': 15, 'As': 15, 'Sb': 15, 'Bi': 15,
+    # Group 16 (Oxygen group)
+    'O': 16, 'S': 16, 'Se': 16, 'Te': 16, 'Po': 16,
+    # Group 17 (Halogens)
+    'F': 17, 'Cl': 17, 'Br': 17, 'I': 17, 'At': 17,
+    # Group 18 (Noble gases)
+    'He': 18, 'Ne': 18, 'Ar': 18, 'Kr': 18, 'Xe': 18, 'Rn': 18,
+    # Transition metals (groups 3-12) - assign to group 3-12 based on period
+    'Sc': 3, 'Ti': 4, 'V': 5, 'Cr': 6, 'Mn': 7, 'Fe': 8, 'Co': 9, 'Ni': 10, 'Cu': 11, 'Zn': 12,
+    'Y': 3, 'Zr': 4, 'Nb': 5, 'Mo': 6, 'Tc': 7, 'Ru': 8, 'Rh': 9, 'Pd': 10, 'Ag': 11, 'Cd': 12,
+    'La': 3, 'Hf': 4, 'Ta': 5, 'W': 6, 'Re': 7, 'Os': 8, 'Ir': 9, 'Pt': 10, 'Au': 11, 'Hg': 12,
+    # Lanthanides/Actinides
+    'Ce': 3, 'Pr': 3, 'Nd': 3, 'Pm': 3, 'Sm': 3, 'Eu': 3, 'Gd': 3, 'Tb': 3, 'Dy': 3, 'Ho': 3, 'Er': 3, 'Tm': 3, 'Yb': 3, 'Lu': 3,
+    'Ac': 3, 'Th': 3, 'Pa': 3, 'U': 3, 'Np': 3, 'Pu': 3,
 }
 
 # Pauling electronegativity (approximate)
@@ -235,6 +264,74 @@ def create_split_indices(dataset: TwoBodyDataset, split_strategy: str,
             'n_test_pairs': len(test_pairs),
             'n_train_val_pairs': len(train_val_pairs),
             'en_threshold': en_diffs[n_train][1] if n_train < len(en_diffs) else 0,
+        }
+    
+    elif split_strategy == 'by_bond_distance':
+        # Train on short bonds, test on long bonds (quantum interactions vary with distance)
+        # Get distances from dataset labels
+        distances = []
+        for pair_name in all_pairs:
+            # Get a sample index for this pair to access distance
+            sample_idx = pair_to_indices[pair_name][0]
+            # Access labels directly from dataset
+            label_dict = dataset.labels[sample_idx]
+            dist = label_dict.get('distance_ang')
+            
+            # Fallback: compute from geometry if distance not in labels
+            if dist is None or np.isnan(dist) or np.isinf(dist):
+                data = dataset[sample_idx]
+                if hasattr(data, 'pos') and data.pos is not None and len(data.pos) >= 2:
+                    dist = float((data.pos[0] - data.pos[1]).norm().item())
+                else:
+                    dist = 2.0  # Default fallback
+            else:
+                dist = float(dist)
+            
+            distances.append((pair_name, dist))
+        
+        # Sort by distance
+        distances.sort(key=lambda x: x[1])
+        
+        # Bottom 80% (short bonds) for training, top 20% (long bonds) for testing
+        n_train = int(len(distances) * (1 - holdout_ratio))
+        train_val_pairs = set(p for p, _ in distances[:n_train])
+        test_pairs = set(p for p, _ in distances[n_train:])
+        
+        split_info = {
+            'strategy': 'by_bond_distance',
+            'train_description': f'Short bonds (bottom {100*(1-holdout_ratio):.0f}%)',
+            'test_description': f'Long bonds (top {100*holdout_ratio:.0f}%)',
+            'n_test_pairs': len(test_pairs),
+            'n_train_val_pairs': len(train_val_pairs),
+            'distance_threshold': distances[n_train][1] if n_train < len(distances) else 0,
+        }
+    
+    elif split_strategy == 'by_period_difference':
+        # Train on same-period pairs, test on different-period pairs
+        # Tests if models learn period-specific vs cross-period interactions
+        train_val_pairs = set()
+        test_pairs = set()
+        
+        for pair_name in all_pairs:
+            elems = pair_name.split('_')
+            periods = [ELEMENT_PERIOD.get(e, 4) for e in elems]
+            period_diff = abs(periods[0] - periods[1]) if len(periods) == 2 else 0
+            
+            if period_diff == 0:  # Same period
+                train_val_pairs.add(pair_name)
+            else:  # Different periods
+                test_pairs.add(pair_name)
+        
+        # If test set is too small, flip
+        if len(test_pairs) < 0.1 * n_pairs:
+            train_val_pairs, test_pairs = test_pairs, train_val_pairs
+        
+        split_info = {
+            'strategy': 'by_period_difference',
+            'train_type': 'same period' if len(test_pairs) > 0.1 * n_pairs else 'different periods',
+            'test_type': 'different periods' if len(test_pairs) > 0.1 * n_pairs else 'same period',
+            'n_test_pairs': len(test_pairs),
+            'n_train_val_pairs': len(train_val_pairs),
         }
     
     else:
@@ -640,9 +737,11 @@ def main():
     parser.add_argument("--models", nargs="+", 
                         default=['tabular_mlp', 'vision_only', 'geometry_only', 'qsn_v2', 'multimodal_v2', 'film_cnn'])
     parser.add_argument("--targets", nargs="+", 
-                        default=['e_g_ev', 'total_energy_ev', 'dipole_mag_d'])
+                        default=['e_g_ev', 'total_energy_ev', 'dipole_mag_d',
+                                 'i_ev', 'a_ev', 'chi_ev', 'eta_ev', 'band_energy_ev', 'repulsive_energy_ev'])
     parser.add_argument("--split_strategies", nargs="+",
-                        default=['held_out_pairs', 'by_period', 'by_electronegativity'])
+                        default=['held_out_pairs', 'by_period', 'by_type', 'by_electronegativity', 
+                                 'by_bond_distance', 'by_period_difference'])
     parser.add_argument("--seeds", nargs="+", type=int, default=[42, 123, 456])
     parser.add_argument("--dataset_path", type=str, default="dataset_combined.npz")
     parser.add_argument("--batch_size", type=int, default=64)

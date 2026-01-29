@@ -50,7 +50,8 @@ from rebuttal_experiments.modality.improved_models import get_improved_model
 
 # Default configuration
 SEEDS = [42, 123, 456]
-TARGETS = ['e_g_ev', 'total_energy_ev', 'e_homo_ev', 'e_lumo_ev', 'dipole_mag_d']
+TARGETS = ['e_g_ev', 'total_energy_ev', 'e_homo_ev', 'e_lumo_ev', 'dipole_mag_d',
+           'i_ev', 'a_ev', 'chi_ev', 'eta_ev', 'band_energy_ev', 'repulsive_energy_ev']
 # Baselines + improved fusion models (no old qsn/vit/multimodal)
 MODELS = ['tabular_mlp', 'tabular_transformer', 'vision_only', 'geometry_only', 
           'qsn_v2', 'multimodal_v2', 'film_cnn']

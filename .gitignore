@@ -6,7 +6,8 @@ data
 results*
 analysis_codes/
 figures
-rebuttal_results/
+rebuttal_results*/
+rebuttal_results.zip
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

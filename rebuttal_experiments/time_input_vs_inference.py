@@ -16,6 +16,9 @@ Usage:
     --target e_g_ev \
     --batch_size 64
 
+  Input-generation only (shortcut; no inference):
+  python rebuttal_experiments/time_input_vs_inference.py --input_generation_only --raw_data_dir raw_data
+
   By default runs: dimenet, egnn, faenet, gatv2, quantumshellnet, schnet, vit
   (skips gotennet, multimodal). Each model is timed --num_runs times (default 1000) and averaged.
   Override with --models m1 m2 ...
@@ -203,11 +206,41 @@ def parse_args():
     parser.add_argument("--warmup_batches", type=int, default=5)
     parser.add_argument("--max_samples", type=int, default=0)
     parser.add_argument("--output_json", type=str, default=None)
+    parser.add_argument(
+        "--input_generation_only",
+        action="store_true",
+        help="Only time input generation (image + geometry). Requires --raw_data_dir. Skips model inference.",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+
+    if args.input_generation_only:
+        if not args.raw_data_dir:
+            raise SystemExit("--input_generation_only requires --raw_data_dir")
+        raw_data_dir = Path(args.raw_data_dir)
+        if not raw_data_dir.exists():
+            raise SystemExit(f"raw_data_dir not found: {raw_data_dir}")
+        results = {
+            "input_generation_only": True,
+            "raw_data_dir": str(raw_data_dir),
+            "max_samples": args.max_samples,
+            "input_generation": {
+                "image_encoding": time_image_generation(raw_data_dir, args.max_samples),
+                "geometry_only": time_geometry_generation(raw_data_dir, args.max_samples),
+            },
+        }
+        output_json = args.output_json or "results_twobody/timing_input_generation.json"
+        output_path = Path(output_json)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w") as f:
+            json.dump(results, f, indent=2)
+        print(json.dumps(results, indent=2))
+        print(f"\nSaved timing results to: {output_path}")
+        return
+
     device = torch.device(args.device) if args.device else torch.device(cfg.device)
 
     # Default: all except gotennet, multimodal
