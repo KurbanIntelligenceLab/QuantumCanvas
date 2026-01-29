@@ -1,9 +1,6 @@
-# QuantumCanvas Rebuttal: Experimental Results
+# QuantumCanvas Rebuttal: Experimental Results Extended
 
-**Source:** `rebuttal_results` (REBUTTAL_SUMMARY.txt, modality ablation, element shuffle, OOD composition, channel permutation)  
 **Generated:** 2026-01-28  
-
-**Channel permutation:** `rebuttal_results/channel_perm/channel_permutation_report.txt` (script: `rebuttal_experiments/channel_perm_from_modality_ckpts.py`).
 
 ---
 
@@ -142,70 +139,7 @@ Test MAE (Mean Absolute Error) per target, averaged over seeds.
 
 ---
 
-## 4. Channel Permutation (Image Channel Importance)
-
-**Source:** `rebuttal_results/channel_perm/channel_permutation_report.txt`  
-**Script:** `rebuttal_experiments/channel_perm_from_modality_ckpts.py` (uses modality ablation checkpoints; can be run for `qsn_v2` on targets `dipole_mag_d`, `e_g_ev`, `e_homo_ev`, `e_lumo_ev`, `total_energy_ev`).
-
-**Interpretation:** For each image channel, predictions are evaluated with that channel *permuted across samples* (destroying sample-specific information while keeping marginal statistics). Large mean |ΔMAE| or large % change → that channel carries important signal for the target. Small values → channel contributes little or is redundant.
-
-### 4.1 Per-target baseline and sensitivity (QuantumShellNet, 3 seeds)
-
-| Target | baseline MAE | mean \|ΔMAE\| |
-|--------|--------------|----------------|
-| a_ev | 1.2537 | 0.0863 |
-| band_energy_ev | 18.2922 | 3.8572 |
-| chi_ev | 0.7683 | 0.0642 |
-| dipole_mag_d | 0.8353 | 0.1359 |
-| e_g_ev | 1.6142 | 0.0255 |
-| e_homo_ev | 1.0323 | 0.0566 |
-| e_lumo_ev | 1.2655 | 0.0749 |
-| total_energy_ev | 18.7593 | 3.5862 |
-
-### 4.2 Average % ΔMAE per channel (across all targets)
-
-Mean of (ΔMAE / baseline MAE × 100) over targets; positive = MAE increases when channel is permuted.
-
-| Channel | Avg % ΔMAE |
-|---------|------------|
-| ch_4 | +27.5% |
-| ch_7 | +21.9% |
-| ch_6 | +16.6% |
-| ch_2 | +7.3% |
-| ch_3 | +6.2% |
-| ch_9 | +5.4% |
-| ch_8 | +4.7% |
-| ch_0 | +1.7% |
-| ch_5 | −0.3% |
-| ch_1 | ≈0% |
-
-*Channels 4 and 7 dominate the contribution; ch_1 has negligible effect.*
-
----
-
-## 5. Channel Permutation Importance
-
-**Source:** `rebuttal_results/channel_permutation_report.txt`  
-Quantumshellnet; metrics averaged over 3 seeds. Reported: baseline MAE/RMSE and mean|ΔMAE| / mean|ΔRMSE| when input channels are permuted (sensitivity per channel).
-
-### Channel importance (% of total sensitivity, averaged over targets and over MAE/RMSE)
-
-Per target, each channel’s share of total |ΔMAE| (and |ΔRMSE|) is computed so the 10 channels sum to 100%; then averaged over all 20 targets and over both losses.
-
-| Channel | MAE % | RMSE % | Avg % |
-|---------|-------|--------|-------|
-| ch_0 | 10.8 | 11.3 | 11.1 |
-| ch_1 | 0.0 | 0.0 | 0.0 |
-| ch_2 | 12.7 | 12.0 | 12.4 |
-| ch_3 | 12.3 | 13.2 | 12.8 |
-| ch_4 | 17.3 | 17.8 | 17.6 |
-| ch_5 | 2.4 | 1.6 | 2.0 |
-| ch_6 | 11.5 | 11.0 | 11.2 |
-| ch_7 | 20.7 | 22.6 | 21.6 |
-| ch_8 | 6.0 | 5.4 | 5.7 |
-| ch_9 | 6.2 | 5.1 | 5.7 |
-
-ch_7 is most important (~22%), ch_4 next (~18%); ch_1 is negligible (~0%).
+## 4. Channel Permutation Importance
 
 ### Summary: mean|ΔMAE| and mean|ΔRMSE| per target (quantumshellnet)
 
@@ -231,41 +165,3 @@ ch_7 is most important (~22%), ch_4 next (~18%); ch_1 is negligible (~0%).
 | repulsive_energy_ev | 1.0325 | 1.7655 | 0.0232 | 0.0365 |
 | softness_evinv | 566.48 | 650.85 | 6.5369 | 5.0159 |
 | total_energy_ev | 18.7593 | 28.7858 | 3.5862 | 3.2946 |
-
-Full per-channel importance (ch_0–ch_9) per target is in `rebuttal_results/channel_permutation_report.txt`.
-
----
-
-## 5. Key Findings for Rebuttal
-
-1. **Vision adds value over tabular**  
-   - Compare test MAE of vision models (ViT, QuantumShellNet) vs tabular baseline.  
-   - If vision > tabular: *"Convolutional processing of spatial orbital structure captures information that cannot be recovered from pooled statistics alone."*
-
-2. **Models do not just memorize element identities**  
-   - Check % MAE increase when element IDs are shuffled.  
-   - Small increase: *"Models learn from orbital/spatial features, not just element lookup."*  
-   - multimodal_v2 shows **+7.1%** on dipole_mag_d and **+12.7%** on e_g_ev / eta_ev under shuffle.  
-   - qsn_v2 and multimodal_v2 show **+0%** under *shuffle_within_sample* for several targets (a_ev, band_energy_ev, chi_ev, dipole_mag_d, e_g_ev, e_homo_ev, e_lumo_ev, eta_ev, i_ev, repulsive_energy_ev, total_energy_ev), indicating robustness to within-sample element permutation.
-
-3. **Models generalize to unseen compositions**  
-   - Small OOD gap: *"Pretraining on QuantumCanvas captures transferable quantum interactions that generalize to unseen element pairs."*  
-   - **held_out_pairs**: qsn_v2 **+0.4%** (a_ev), **−3.7%** (band_energy_ev), **−1.5%** (total_energy_ev); vision_only **−8.1%** (total_energy_ev).  
-   - **by_bond_distance**: multimodal_v2 **+0.4%** (a_ev), **+0.1%** (chi_ev); qsn_v2 **−4.2%** (a_ev).  
-   - **vision_only** has smallest average OOD gap (**+32.0%**), followed by **multimodal_v2** (**+95.8%**).
-
-4. **Image channel importance (channel permutation)**  
-   - *"Permuting individual image channels shows that orbital-density channels 4 and 7 carry the most predictive signal, consistent with physically meaningful use of the 10-channel representation."*
-
-### Suggested rebuttal sentences
-
-- *"Our ablations show that vision-based processing of orbital density images outperforms equivalent tabular baselines (e.g. qsn_v2 avg MAE 0.415 vs tabular_mlp 0.651, tabular_transformer 0.486), demonstrating that spatial structure is informative."*
-- *"Element ID shuffling increases MAE by only ~7–13% for multimodal_v2 on dipole_mag_d, e_g_ev, and eta_ev, and shuffle_within_sample yields 0% change for qsn_v2 and multimodal_v2 on multiple targets, showing the models learn from spatial orbital features rather than memorizing element correlations."*
-- *"On held-out compositions, vision models show smaller generalization gaps (e.g. vision_only avg +32%, multimodal_v2 +95.8%) compared to geometry-only (+171.7%) and tabular (+133.7%), confirming transferable feature learning."*
-- *"Channel permutation importance on QuantumShellNet shows channels 4 and 7 contribute most (avg +27.5% and +21.9% ΔMAE across targets), indicating the model relies on specific orbital-density channels rather than arbitrary texture."*
-
----
-
-*All values and losses above are from the `rebuttal_results` experiments (modality comparison, element-shuffle ablation, OOD composition splits, channel permutation).*
-
-**Validation:** Run `python rebuttal_results/validate_rebuttal_results_md.py` to check that every value matches the raw data (JSON + OOD report). The script exits 0 only if all checks pass.
