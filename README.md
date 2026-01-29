@@ -1,4 +1,4 @@
-# QuantumCanvas: A Multimodal Benchmark for  Visual\\ Learning of Atomic Interactions
+# QuantumCanvas: A Multimodal Benchmark for  Visual Learning of Atomic Interactions
 
 **CVPR 2026 Submission under review**
 

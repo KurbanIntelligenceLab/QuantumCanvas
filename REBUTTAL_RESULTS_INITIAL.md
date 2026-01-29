@@ -1,9 +1,5 @@
 # QuantumCanvas Rebuttal: Experimental Results
 
-**Source:** `rebuttal_results_100_epochs` (REBUTTAL_SUMMARY.txt, modality ablation, element shuffle, OOD composition)  
-**Generated:** 2026-01-28  
-**Note:** This run uses 100 epochs; modality and OOD experiments use a subset of targets.
-
 ---
 
 ## 1. Modality Comparison (Test MAE ± std)
@@ -107,5 +103,42 @@ Splits: **by_electronegativity**, **by_period**, **held_out_pairs**. Targets: di
 
 ---
 
-*All values from `rebuttal_results_100_epochs` (100 epochs; subset of targets). Validate with:  
-`python rebuttal_results/validate_rebuttal_results_md.py --dir rebuttal_results_100_epochs`*
+## 4. Inference Timing
+
+**Source:** `rebuttal_results/timing_e_g_ev.json` (target: e_g_ev, 2840 samples, 1000 runs, CUDA).
+
+Per-sample inference time and throughput (batch inference over full dataset, averaged).
+
+| Model | ms/sample | samples/sec | Params |
+|-------|-----------|-------------|--------|
+| schnet | 0.072 | 13,913 | 470,497 |
+| gatv2 | 0.075 | 13,287 | 384,577 |
+| egnn | 0.083 | 12,105 | 460,997 |
+| vit | 0.122 | 8,167 | 458,689 |
+| faenet | 0.175 | 5,724 | 435,593 |
+| quantumshellnet | 0.218 | 4,586 | 343,542 |
+| dimenet | 0.249 | 4,012 | 482,958 |
+
+*Vision model (quantumshellnet) runs at **4,586 samples/sec**; GNNs are faster but image-based inference remains practical for screening.*
+
+---
+
+## QuantumshellNet Channel Permutation Summary
+
+- Targets: dipole_mag_d, e_g_ev, e_homo_ev, e_lumo_ev, total_energy_ev
+- Seeds: 123, 42, 456
+
+### Average % ΔMAE per Channel (across targets)
+
+| Channel | Avg % ΔMAE |
+| --- | --- |
+| ch_4 | 15.935% |
+| ch_6 | 9.666% |
+| ch_7 | 2.632% |
+| ch_2 | 2.309% |
+| ch_9 | 1.886% |
+| ch_3 | 1.135% |
+| ch_8 | 0.802% |
+| ch_0 | 0.216% |
+| ch_5 | 0.152% |
+| ch_1 | 0.001% |
