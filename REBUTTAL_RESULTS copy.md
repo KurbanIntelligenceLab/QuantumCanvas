@@ -183,59 +183,6 @@ Mean of (ΔMAE / baseline MAE × 100) over targets; positive = MAE increases whe
 
 ---
 
-## 5. Channel Permutation Importance
-
-**Source:** `rebuttal_results/channel_permutation_report.txt`  
-Quantumshellnet; metrics averaged over 3 seeds. Reported: baseline MAE/RMSE and mean|ΔMAE| / mean|ΔRMSE| when input channels are permuted (sensitivity per channel).
-
-### Channel importance (% of total sensitivity, averaged over targets and over MAE/RMSE)
-
-Per target, each channel’s share of total |ΔMAE| (and |ΔRMSE|) is computed so the 10 channels sum to 100%; then averaged over all 20 targets and over both losses.
-
-| Channel | MAE % | RMSE % | Avg % |
-|---------|-------|--------|-------|
-| ch_0 | 10.8 | 11.3 | 11.1 |
-| ch_1 | 0.0 | 0.0 | 0.0 |
-| ch_2 | 12.7 | 12.0 | 12.4 |
-| ch_3 | 12.3 | 13.2 | 12.8 |
-| ch_4 | 17.3 | 17.8 | 17.6 |
-| ch_5 | 2.4 | 1.6 | 2.0 |
-| ch_6 | 11.5 | 11.0 | 11.2 |
-| ch_7 | 20.7 | 22.6 | 21.6 |
-| ch_8 | 6.0 | 5.4 | 5.7 |
-| ch_9 | 6.2 | 5.1 | 5.7 |
-
-ch_7 is most important (~22%), ch_4 next (~18%); ch_1 is negligible (~0%).
-
-### Summary: mean|ΔMAE| and mean|ΔRMSE| per target (quantumshellnet)
-
-| Target | baseline MAE | baseline RMSE | mean\|ΔMAE\| | mean\|ΔRMSE\| |
-|--------|--------------|---------------|--------------|---------------|
-| a_ev | 1.2537 | 1.5233 | 0.0863 | 0.1134 |
-| band_energy_ev | 18.2922 | 27.9288 | 3.8572 | 3.3306 |
-| chi_ev | 0.7683 | 1.0524 | 0.0642 | 0.0478 |
-| dipole_mag_d | 0.8353 | 0.9154 | 0.1359 | 0.1788 |
-| dipole_z_d | 1.2400 | 1.7335 | 0.1090 | 0.1347 |
-| distance_ang | 0.3524 | 0.4253 | 0.0965 | 0.1257 |
-| e_g_ev | 1.6142 | 2.0061 | 0.0255 | 0.0375 |
-| e_homo_ev | 1.0323 | 1.2749 | 0.0566 | 0.0627 |
-| e_lumo_ev | 1.2655 | 1.5648 | 0.0749 | 0.0988 |
-| electrophilicity_ev | 10850.13 | 12028.15 | 118.75 | 97.57 |
-| eta_ev | 0.7691 | 1.0183 | 0.0040 | 0.0057 |
-| i_ev | 1.0327 | 1.3330 | 0.0805 | 0.0850 |
-| mermin_free_energy_ev | 19.6170 | 28.1153 | 3.7246 | 3.8963 |
-| mu_ev | 0.8152 | 1.0666 | 0.0171 | 0.0156 |
-| q_absmean | 0.0447 | 0.0528 | 0.0129 | 0.0159 |
-| q_maxabs | 0.0554 | 0.0643 | 0.0129 | 0.0149 |
-| q_std | 0.0784 | 0.0863 | 0.0112 | 0.0140 |
-| repulsive_energy_ev | 1.0325 | 1.7655 | 0.0232 | 0.0365 |
-| softness_evinv | 566.48 | 650.85 | 6.5369 | 5.0159 |
-| total_energy_ev | 18.7593 | 28.7858 | 3.5862 | 3.2946 |
-
-Full per-channel importance (ch_0–ch_9) per target is in `rebuttal_results/channel_permutation_report.txt`.
-
----
-
 ## 5. Key Findings for Rebuttal
 
 1. **Vision adds value over tabular**  
