@@ -7,8 +7,6 @@ but without spatial structure (pooled/flattened features + MLP/Transformer).
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
 
 class TabularMLPRegressor(nn.Module):
     """
