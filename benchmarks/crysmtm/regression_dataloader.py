@@ -7,15 +7,12 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-# Add this import for PyG Data
 try:
     from torch_geometric.data import Data as PyGData
 except ImportError:
     PyGData = None
 
-
 class LabelNormalizer:
-    """Normalize regression labels using training data statistics."""
 
     def __init__(self, method="standard"):
         self.method = method
@@ -26,23 +23,23 @@ class LabelNormalizer:
         self.fitted = False
 
     def fit(self, labels):
-        """Fit the normalizer on training labels."""
+
         if self.method == "standard":
             self.means = np.mean(labels, axis=0)
             self.stds = np.std(labels, axis=0)
-            # Avoid division by zero
+
             self.stds = np.where(self.stds == 0, 1.0, self.stds)
         elif self.method == "minmax":
             self.mins = np.min(labels, axis=0)
             self.maxs = np.max(labels, axis=0)
-            # Avoid division by zero
+
             ranges = self.maxs - self.mins
             ranges = np.where(ranges == 0, 1.0, ranges)
             self.maxs = self.mins + ranges
         self.fitted = True
 
     def transform(self, labels):
-        """Transform labels using fitted statistics."""
+
         if not self.fitted:
             raise ValueError("Normalizer must be fitted before transforming")
 
@@ -54,7 +51,7 @@ class LabelNormalizer:
             raise ValueError(f"Unknown normalization method: {self.method}")
 
     def inverse_transform(self, normalized_labels):
-        """Inverse transform normalized labels back to original scale."""
+
         if not self.fitted:
             raise ValueError("Normalizer must be fitted before inverse transforming")
 
@@ -65,21 +62,7 @@ class LabelNormalizer:
         else:
             raise ValueError(f"Unknown normalization method: {self.method}")
 
-
 class RegressionLoader(Dataset):
-    """PyTorch Dataset for regression on CrysMTM data with selectable modalities and regression labels.
-    
-    Args:
-        label_dir (str): Directory containing labels.csv file.
-        temperature_filter (callable, optional): Function to filter temperatures.
-        transform (callable, optional): Transformations to apply on images.
-        modalities (list of str): Modalities to return. Any of 'image', 'xyz', 'text', 'element'.
-        max_rotations (int, optional): Maximum number of rotations to include per temperature.
-        as_pyg_data (bool, optional): If True and modalities are ['xyz', 'element'], returns PyG Data object.
-        normalize_labels (bool, optional): Whether to normalize regression labels.
-        normalization_method (str, optional): Normalization method ('standard' or 'minmax').
-        fit_normalizer_on_data (bool, optional): Whether to fit normalizer on this dataset's data.
-    """
 
     def __init__(
         self,
@@ -105,7 +88,6 @@ class RegressionLoader(Dataset):
         self.label_data = self._load_label_data()
         self.data = self._prepare_dataset()
 
-        # Initialize normalizer if needed
         self.normalizer = None
         if self.normalize_labels:
             self.normalizer = LabelNormalizer(method=self.normalization_method)
@@ -113,7 +95,7 @@ class RegressionLoader(Dataset):
                 self._fit_normalizer()
 
     def _fit_normalizer(self):
-        """Fit normalizer on all labels in this dataset."""
+
         all_labels = []
         for entry in self.data:
             temp = entry["temperature"]
@@ -139,26 +121,23 @@ class RegressionLoader(Dataset):
         )
 
     def set_normalizer(self, normalizer: LabelNormalizer):
-        """Set a pre-fitted normalizer for this dataset."""
+
         self.normalizer = normalizer
         self.normalize_labels = True
 
     def _load_label_data(self) -> Dict[str, Dict[int, Dict[str, float]]]:
-        """Load regression labels from CSV file for each phase and temperature."""
+
         phases = ["anatase", "brookite", "rutile"]
         label_data = {phase: {} for phase in phases}
 
-        # Load data from the CSV file
         csv_file = os.path.join(self.label_dir, "labels.csv")
         if not os.path.exists(csv_file):
             raise FileNotFoundError(f"CSV file not found: {csv_file}")
 
-        # Read the CSV file
         df = pd.read_csv(csv_file)
 
-        # Process each row
         for _, row in df.iterrows():
-            polymorph = row["Polymorph"].lower()  # Convert to lowercase to match phases
+            polymorph = row["Polymorph"].lower()
             temp_str = row["Temperature"]
             temp = (
                 int(temp_str.replace("K", ""))
@@ -168,11 +147,9 @@ class RegressionLoader(Dataset):
             parameter = row["Parameter"]
             value = float(row["Value"])
 
-            # Initialize temperature dict if not exists
             if temp not in label_data[polymorph]:
                 label_data[polymorph][temp] = {}
 
-            # Map parameter names
             param_mapping = {
                 "HOMO": "HOMO",
                 "LUMO": "LUMO",
@@ -191,7 +168,7 @@ class RegressionLoader(Dataset):
         return label_data
 
     def _get_available_rotations(self, temp_dir: str) -> Dict[str, List[int]]:
-        """Get available rotation numbers for each modality."""
+
         available_rotations = {}
         if "image" in self.modalities:
             images_dir = os.path.join(temp_dir, "images")
@@ -235,7 +212,7 @@ class RegressionLoader(Dataset):
         return available_rotations
 
     def _prepare_dataset(self) -> List[Dict[str, Any]]:
-        """Prepare dataset by collecting all available samples."""
+
         data = []
         phases = ["anatase", "brookite", "rutile"]
         for phase in phases:
@@ -286,8 +263,7 @@ class RegressionLoader(Dataset):
     def __getitem__(self, idx: int) -> Any:
         entry = self.data[idx]
         result = {}
-        
-        # Special handling for PyG Data format
+
         if self.as_pyg_data and set(self.modalities) == {"xyz", "element"}:
             if PyGData is None:
                 raise ImportError("torch_geometric is required for as_pyg_data=True")
@@ -332,10 +308,9 @@ class RegressionLoader(Dataset):
                 )
 
             data = PyGData(z=z, pos=pos)
-            data.y = y.unsqueeze(0)  # shape [1, 9]
+            data.y = y.unsqueeze(0)
             return data
-            
-        # Standard handling for other modalities
+
         if "image" in self.modalities:
             image = Image.open(entry["image_path"]).convert("RGB")
             if self.transform:
@@ -390,7 +365,6 @@ class RegressionLoader(Dataset):
 
         result["regression_label"] = regression_label
 
-        # Add metadata for evaluation scripts
         result["temperature"] = entry["temperature"]
         result["phase"] = entry["phase"]
         result["rotation"] = entry["rotation"]

@@ -1,4 +1,4 @@
-# QuantumCanvas: A Multimodal Benchmark for  Visual Learning of Atomic Interactions
+# QuantumCanvas: A Multimodal Benchmark for Learning Two-Body Quantum Interactions
 
 ---
 
@@ -6,30 +6,87 @@
 
 Despite rapid advances in molecular and materials machine learning, most models lack physical transferability: they fit correlations across whole molecules or crystals rather than learning the quantum interactions between atomic pairs. Yet bonding, charge redistribution, orbital hybridization, and electronic coupling all emerge from these two-body interactions that define local quantum fields in many-body systems.
 
-We introduce **QuantumCanvas**, a large-scale multimodal benchmark that treats two-body quantum systems as foundational units of matter. The dataset spans **2,850 element–element pairs**, each annotated with **18 electronic, thermodynamic, and geometric properties** and paired with **ten-channel image representations** derived from *l*- and *m*-resolved orbital densities, angular field transforms, co-occupancy maps, and charge-density projections. These physically grounded images encode spatial, angular, and electrostatic symmetries without explicit coordinates, providing an interpretable visual modality for quantum learning.
+We introduce **QuantumCanvas**, a large-scale multimodal benchmark that treats two-body quantum systems as a minimal, systematically enumerable unit of interatomic interaction. The dataset spans **2,850 element–element pairs**, each annotated with **20 electronic, thermodynamic, and geometric properties** and paired with **ten-channel image representations** that render orbital shell populations, angular-momentum moments, and charge- and dipole-derived fields. These images encode spatial, angular, and electrostatic structure without explicit coordinates, providing an image-based modality that complements coordinate-based representations.
 
-Benchmarking eight architectures across 18 targets, we report MAEs of **0.201 eV** on energy gap with GATv2, **0.265 eV** on HOMO and **0.274 eV** on LUMO with EGNN, and **0.008 Å** on bond length with DimeNet. For energy-related quantities, DimeNet attains **2.27 eV** total-energy MAE and **0.132 eV** repulsive-energy MAE, while a multimodal fusion model achieves a **2.15 eV** Mermin free-energy MAE. Pretraining on **QuantumCanvas** further improves convergence stability and generalization when fine-tuned on **QM9**, **MD17**, and **CrysMTM**.
+Benchmarking eight architectures across 20 targets, we report MAEs of **0.201 eV** on energy gap with GATv2, **0.265 eV** on HOMO and **0.274 eV** on LUMO with the GCN, and **0.008 Å** on bond length with DimeNet++. For energy-related quantities, DimeNet++ attains **2.27 eV** total-energy MAE and **0.132 eV** repulsive-energy MAE, while a multimodal fusion model achieves a **2.15 eV** Mermin free-energy MAE. Parameter-matched ablations quantify what the image modality contributes: a compact orbital-image network attains a **45% lower** energy-gap MAE than a tabular baseline receiving the same pooled information, and an image-only model recovers dipole moments to **0.129 D** from the rendered fields. Pretraining on **QuantumCanvas** further improves convergence stability and generalization when fine-tuned on **QM9**, **MD17**, and **CrysMTM**.
 
-By unifying orbital physics with vision-based representation learning, **QuantumCanvas** provides a principled and interpretable basis for learning transferable quantum interactions through coupled visual and numerical modalities.
+By coupling orbital physics with image- and graph-based learning, **QuantumCanvas** provides a controlled, physically grounded testbed for studying which signals each modality captures, how the modalities combine, and how they transfer across molecular, dynamical, and crystalline regimes.
+
+---
+
+## 🔁 Reproducing manuscript results
+
+See [REPRODUCE.md](REPRODUCE.md) for the exact command, config, and output
+path behind every table and figure in the manuscript, plus the environment
+pins needed for the DimeNet++ results.
+
+## 📌 Dataset DOI & Citation
+
+The dataset is permanently archived on Zenodo (**CC-BY-4.0**); the code is released under the **MIT License**.
+
+**DOI:** [10.5281/zenodo.20631934](https://doi.org/10.5281/zenodo.20631934)
+
+```bibtex
+@misc{polat2026quantumcanvas_dataset,
+  title        = {QuantumCanvas: A Multimodal Benchmark for Learning Two-Body Quantum Interactions},
+  author       = {Polat, Can and Serpedin, Erchin and Kurban, Mustafa and Kurban, Hasan},
+  year         = {2026},
+  publisher    = {Zenodo},
+  doi          = {10.5281/zenodo.20631934},
+  url          = {https://doi.org/10.5281/zenodo.20631934}
+}
+```
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Build Dataset
+### 1. Install
+
+Dependencies are declared in `pyproject.toml` and managed with
+[uv](https://docs.astral.sh/uv/):
 
 ```bash
-python build_dataset.py
+uv sync
 ```
 
-This creates `dataset_combined.npz` (31.9 MB) with all 2850 samples in one file.
+This creates `.venv` from `uv.lock`. Prefix commands with `uv run` to use it,
+for example `uv run python build_dataset.py`.
 
-**Custom output:**
+The PyTorch Geometric C-extensions and the optional encoder backends are
+extras that need a wheel index; see the Environment section of
+[REPRODUCE.md](REPRODUCE.md) for those commands and for two known
+dependency pitfalls (`numpy<2.0` is required, and `torch-sparse` must come
+from the wheel index rather than a source build).
+
+### 2. Get the Dataset
+
+The dataset is not stored in this repository. Download the archived copy
+from Zenodo (33.5 MB):
+
 ```bash
-python build_dataset.py /path/to/raw_data my_dataset.npz
+curl -L -o dataset_combined.npz \
+  https://zenodo.org/records/20631934/files/dataset_combined.npz?download=1
 ```
 
-### 2. Load and Use
+Verify the download before using it:
+
+```bash
+md5sum dataset_combined.npz
+# a35d349814ca9e12a8413289c015de49
+```
+
+On macOS use `md5 dataset_combined.npz` instead. Every script in this
+repository expects the file at the repository root under this name.
+
+**Rebuilding from source instead of downloading** requires the raw
+per-pair DFTB+ outputs, which are not part of the Zenodo archive:
+
+```bash
+uv run python build_dataset.py /path/to/raw_data dataset_combined.npz
+```
+
+### 3. Load and Use
 
 **PyTorch (for CNNs/ViTs):**
 ```python
@@ -62,7 +119,7 @@ for batch in loader:
 ### Output
 
 ```
-dataset_combined.npz   → Single file with all 2850 samples (31.9 MB)
+dataset_combined.npz   → Single file with all 2850 samples (33.5 MB, from Zenodo)
 ├── images:       [2850, 10, 32, 32] - All image tensors
 ├── geometries:   [2850, 2, 4] - All 3D coordinates
 ├── elements:     list of 2850 element pairs
@@ -100,11 +157,16 @@ band_gap = labels['e_g_ev']
 
 | Ch | Name | Description |
 |----|------|-------------|
-| 0-1 | O-Map | Orbital features (radial, angular) |
-| 2-3 | RIP-GAF | Rotation-invariant orbitals (s/p, d/f) |
-| 4-5 | RIP-MTF | Multipole moments (dipole, quadrupole) |
-| 6-7 | COM | Density features (charge, orbital) |
-| 8-9 | Q-Image | Charge distribution (positive, negative) |
+| 0 | Orbital-population map | Orbital-weighted population stamp per atom |
+| 1 | Angular-moment map | Net magnetic-moment magnitude per atom |
+| 2 | s/p shell field | Isotropic radial field × total s+p population |
+| 3 | d/f shell field | Four-fold radial field × total d+f population |
+| 4 | Dipole field | Radial ring × dipole magnitude ‖μ‖ |
+| 5 | Charge-asymmetry field | Quadrupole field × \|q_A − q_B\| |
+| 6 | Charge-magnitude map | Stamp per atom × \|q\| |
+| 7 | Electron-population map | Stamp per atom × total electron population |
+| 8 | Positive-charge map | Stamp at atoms with q > 0 |
+| 9 | Negative-charge map | Stamp at atoms with q < 0 |
 
 ---
 
@@ -275,7 +337,7 @@ python build_dataset.py /path/to/raw_data /path/to/output_dir
 2. ✅ Parses `geo_end.xyz` → 3D coordinates  
 3. ✅ Creates 10-channel images → `[10, 32, 32]` tensors
 4. ✅ Integrates CSV labels → 37 quantum properties
-5. ✅ Saves to `dataset_combined.npz` → single file (31.9 MB)
+5. ✅ Saves to `dataset_combined.npz` → single file (33.5 MB)
 6. ✅ Creates `analysis/` folder → CSVs & summaries
 
 **Processing time:** ~2 minutes for 2850 samples  
@@ -293,7 +355,7 @@ python build_dataset.py /path/to/raw_data /path/to/output_dir
 ├── pytorch_geometric_dataset.py ← PyTorch Geometric loader
 ├── check_npz.py               ← Inspect data
 │
-├── dataset_combined.npz       ← Main dataset (31.9 MB, 2850 samples) ⭐
+├── dataset_combined.npz       ← Main dataset (33.5 MB, 2850 samples, download from Zenodo) ⭐
 │
 ├── raw_data/                  ← Your input data
 │   ├── Ag_Al/detailed.out + geo_end.xyz
@@ -410,7 +472,7 @@ See `pytorch_geometric_dataset.py` for full implementation!
 
 ```
 TwoBody-CVPR2026/
-├── dataset_combined.npz           (32 MB) ⭐
+├── dataset_combined.npz           (33.5 MB, download from Zenodo) ⭐
 ├── pytorch_dataset.py
 ├── pytorch_geometric_dataset.py
 ├── README.md

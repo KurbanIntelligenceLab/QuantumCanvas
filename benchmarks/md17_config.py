@@ -1,17 +1,11 @@
-"""
-Standardized configuration for MD17 experiments
-Ensures fair comparison across all models
-"""
-
-# Training hyperparameters (identical for all models)
 TRAINING_CONFIG = {
     'train_size': 950,
     'val_size': 50,
-    # test_size is remaining molecules
+
     'batch_size': 32,
     'epochs': 50,
-    'lr_scratch': 1e-4,          # Learning rate for training from scratch
-    'lr_finetune': 1e-5,         # Learning rate for fine-tuning
+    'lr_scratch': 1e-4,
+    'lr_finetune': 1e-5,
     'weight_decay': 0.0,
     'optimizer': 'adam',
     'scheduler': 'reduce_on_plateau',
@@ -19,17 +13,14 @@ TRAINING_CONFIG = {
     'scheduler_patience': 10,
     'scheduler_min_lr': 1e-6,
     'early_stopping_patience': 30,
-    'loss': 'mae',  # L1Loss
+    'loss': 'mae',
     'num_workers': 4,
 }
 
-# MD17 molecules to benchmark
 MD17_MOLECULES = ['benzene', 'aspirin', 'ethanol']
 
-# Seeds for reproducibility
 SEEDS = [42, 123, 456]
 
-# Model architectures (MUST MATCH two-body checkpoint parameters for transfer learning!)
 MODEL_CONFIGS = {
     'schnet': {
         'hidden_channels': 96,
@@ -70,23 +61,16 @@ MODEL_CONFIGS = {
     }
 }
 
-# Two-body checkpoint mapping (MD17 predicts energy, map to closest two-body target)
-# Using total_energy as the most relevant for MD17 energy prediction
 TWOBODY_TARGET_MAP = {
-    'energy': 'total_energy_ev',  # MD17 energy → two-body total energy
+    'energy': 'total_energy_ev',
 }
 
-
 def get_checkpoint_path(model_type: str, molecule: str, seed: int):
-    """Get two-body checkpoint path for transfer learning
-    
-    For MD17, we use total_energy checkpoints as the source
-    since MD17 is about energy prediction
-    """
+
     from pathlib import Path
-    
+
     twobody_target = TWOBODY_TARGET_MAP['energy']
     checkpoint_path = Path(f'results_twobody/{twobody_target}/{model_type}/seed_{seed}/best_model.pt')
-    
+
     return checkpoint_path if checkpoint_path.exists() else None
 
