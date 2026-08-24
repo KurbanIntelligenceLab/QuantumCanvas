@@ -1,0 +1,12 @@
+check,value
+charge_conservation_max_abs_residual_e,1.000e-08
+charge_conservation_mean_abs_residual_e,7.018e-12
+n_pairs_residual_gt_1e-3,0
+n_pairs_total,2850
+total_charge_unique_values,2
+total_charge_std,2.649e-10
+R2_q_absmean_vs_q_maxabs,1.000000
+R2_q_absmean_vs_q_std,1.000000
+R2_q_maxabs_vs_q_std,1.000000
+q_absmean_identical_to_q_std_atol_1e-12,True
+independent_targets_of_20,17

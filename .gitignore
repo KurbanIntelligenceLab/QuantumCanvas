@@ -1,18 +1,24 @@
 raw_data
+dataset_combined.npz
+*.npz
 processed_images
 visualizations
 analysis
 data
-results*
+results_twobody*/
+results_transfer*/
 analysis_codes/
 figures
-rebuttal_results*/
-rebuttal_results.zip
+results_modality*/
+results_modality.zip
+.DS_Store
+.env
+.claude/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
 *$py.class
-
+development/
 # C extensions
 *.so
 

@@ -1,0 +1,9 @@
+case,goten_scratch,schnet_pretrained,goten_scratch_better,goten_delta_pct,schnet_delta_pct
+crysmtm:HOMO,0.0037,0.013,True,-35.08,-49.52
+crysmtm:LUMO,0.0021,0.0079,True,14.73,-73.92
+md17:aspirin,4.6507,3.4349,False,-1.27,-2.2
+md17:benzene,1.7129,0.7488,False,-35.84,-11.09
+md17:ethanol,2.7249,1.4564,False,-3.8,7.43
+qm9:gap,0.0791,0.0998,True,7.05,-13.67
+qm9:homo,0.0504,0.0767,True,3.22,-10.27
+qm9:lumo,0.0442,0.0598,True,4.65,-16.25

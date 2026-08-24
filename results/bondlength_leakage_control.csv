@@ -1,0 +1,9 @@
+architecture,coordinate_input,mae_mean,mae_std,n_seeds,valid_control
+DimeNet++ (published Table 1),optimized coordinates,0.008,0.001,3,False
+DimeNet++ (replication),optimized coordinates,0.019,0.0064,3,False
+SchNet (replication),optimized coordinates,0.0567,0.0096,3,False
+SchNet,optimized coordinates,0.0868,0.0097,3,False
+SchNet (replication),constant 1.5 A line (still a distance input),0.1259,0.0053,3,False
+DimeNet++ (replication),constant 1.5 A line (still a distance input),0.1308,0.0192,3,False
+z-only MLP,"none (2 features: z_A, z_B)",0.4332,0.0282,3,True
+constant predictor,none,0.4963,0.0157,3,False
