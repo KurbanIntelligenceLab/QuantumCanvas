@@ -26,6 +26,8 @@ The dataset is permanently archived on Zenodo (**CC-BY-4.0**); the code is relea
 
 **DOI:** [10.5281/zenodo.20631934](https://doi.org/10.5281/zenodo.20631934)
 
+To cite the paper rather than the dataset, see [Citation](#-citation).
+
 ```bibtex
 @misc{polat2026quantumcanvas_dataset,
   title        = {QuantumCanvas: A Multimodal Benchmark for Learning Two-Body Quantum Interactions},
@@ -372,15 +374,19 @@ python build_dataset.py /path/to/raw_data /path/to/output_dir
 
 ## 🎓 Citation
 
+If you use *QuantumCanvas*, please cite the paper:
+
 ```bibtex
-@dataset{twobody2026,
-  title={Two-Body Quantum System Image Dataset},
-  year={2026},
-  samples={2850},
-  image_channels={10},
-  labels={37}
+@article{polat2025quantumcanvas,
+  title={QuantumCanvas: A Multimodal Benchmark for Visual Learning of Atomic Interactions},
+  author={Polat, Can and Serpedin, Erchin and Kurban, Mustafa and Kurban, Hasan},
+  journal={arXiv preprint arXiv:2512.01519},
+  year={2025}
 }
 ```
+
+To cite the archived dataset itself, use the Zenodo entry under
+[Dataset DOI & Citation](#-dataset-doi--citation).
 
 ---
 
