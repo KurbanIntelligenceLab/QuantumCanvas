@@ -1,5 +1,4 @@
 import argparse, json, os, sys, time, inspect, numpy as np, torch
-sys.path.insert(0, os.getcwd())
 from torch_geometric.loader import DataLoader
 import benchmarks.models as M
 from benchmarks.twobody_dataloader import TwoBodyDataset
@@ -11,14 +10,16 @@ def build(name, c):
     return cls(**{k: v for k, v in c.items() if k in ok})
 
 p = argparse.ArgumentParser()
+p.add_argument('--model', default='schnet', choices=['schnet', 'gotennet'])
 p.add_argument('--target', required=True)
 p.add_argument('--seed', type=int, required=True)
 p.add_argument('--epochs', type=int, default=50)
 p.add_argument('--clip', type=float, default=1.0)
-p.add_argument('--data', default='dataset_combined.npz')
-p.add_argument('--model', default='schnet')
+p.add_argument('--dataset_path', '--data', dest='data', default='dataset_combined.npz')
+p.add_argument('--max-steps', type=int, default=0, help='stop after N training steps (smoke test)')
+p.add_argument('--output_dir', default='outputs/pretrain')
 a = p.parse_args()
-od = f"results_twobody/{a.target}/{a.model}/seed_{a.seed}"; os.makedirs(od, exist_ok=True)
+od = f"{a.output_dir}/{a.target}/{a.model}/seed_{a.seed}"; os.makedirs(od, exist_ok=True)
 rf = os.path.join(od, 'results.json')
 if os.path.exists(rf) and json.load(open(rf)).get('done'):
     print('already complete'); sys.exit(0)
@@ -27,8 +28,12 @@ torch.manual_seed(a.seed); np.random.seed(a.seed)
 ds = TwoBodyDataset(a.data, target_label=a.target)
 n = len(ds); g = np.random.RandomState(a.seed); idx = g.permutation(n)
 tr, va = idx[:int(.8*n)], idx[int(.8*n):int(.9*n)]
+ds.fit_normalization(tr)  # label scaling from the training split only
 ys = torch.tensor([float(ds[int(i)].y.view(-1)[0]) for i in tr])
 mu, sd = float(ys.mean()), float(ys.std()); sd = sd if sd > 1e-8 else 1.0
+# y is min-max scaled to [-1, 1] by the dataset, then z-scored; `unit` maps the
+# reported MAE back to the target's own units (a constant, so model selection is unaffected).
+unit = (ds.label_max - ds.label_min) / 2.0
 trl = DataLoader([ds[int(i)] for i in tr], batch_size=64, shuffle=True)
 val = DataLoader([ds[int(i)] for i in va], batch_size=64)
 mcfg = cfg.model_configs[a.model]
@@ -41,6 +46,7 @@ if os.path.exists(sf):
     st = torch.load(sf, map_location=dev, weights_only=False)
     model.load_state_dict(st['model']); opt.load_state_dict(st['opt'])
     ep0, best, bestep, hist = st['epoch']+1, st['best'], st['bestep'], st['hist']
+step_count = 0
 for ep in range(ep0, a.epochs+1):
     model.train(); t0=time.time(); tot=0.0; nb=0
     for d in trl:
@@ -52,13 +58,20 @@ for ep in range(ep0, a.epochs+1):
             json.dump({'done':False,'error':'nonfinite'}, open(rf,'w')); sys.exit(2)
         loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(), a.clip)
         opt.step(); tot += float(loss); nb += 1
+        step_count += 1
+        if a.max_steps and step_count >= a.max_steps:
+            print(f"SMOKE_STEP {step_count} loss {float(loss):.5f}", flush=True)
+            break
+    if a.max_steps and step_count >= a.max_steps:
+        print('SMOKE_DONE', flush=True)
+        sys.exit(0)
     model.eval(); se=0.0; cnt=0
     with torch.no_grad():
         for d in val:
             d = d.to(dev)
             out = model(d.z, d.pos, d.batch).squeeze()
             y = ((d.y.view(-1)-mu)/sd).to(dev)
-            e = (out-y).abs()*sd
+            e = (out-y).abs()*sd*unit
             se += float(e.sum()); cnt += int(e.numel())
     vmae = se/max(cnt,1)
     hist.append({'epoch':ep,'train':tot/max(nb,1),'val_mae':vmae,'secs':round(time.time()-t0,2)})

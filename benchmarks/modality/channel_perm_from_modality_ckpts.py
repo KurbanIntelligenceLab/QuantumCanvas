@@ -1,29 +1,23 @@
 import argparse
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
 import torch
+
+from quantumcanvas import batch_images
 from torch_geometric.loader import DataLoader
 
-_script_dir = Path(__file__).resolve().parent
-_project_root = _script_dir.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
-
+from benchmarks.modality.common import maybe_sync as _maybe_sync
 from benchmarks.twobody_dataloader import TwoBodyDataset
 from benchmarks.models import get_model as get_benchmark_model
 from benchmarks.benchmark_config import cfg
 from benchmarks.modality.models import get_modality_model
 from benchmarks.modality.fusion_models import get_fusion_model
-
-def _maybe_sync(device: torch.device):
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
+from benchmarks.modality.common import test_split
 
 def _extract_images(data, device: torch.device):
-    images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+    images = batch_images(data).to(device).float()
     return images
 
 @torch.no_grad()
@@ -85,7 +79,7 @@ def find_checkpoints(results_dir: Path, targets, model, seeds=None):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--results_dir", type=str, default="results_modality/modality_ablation")
+    parser.add_argument("--results_dir", type=str, default="outputs/modality/modality_ablation")
     parser.add_argument("--dataset_path", type=str, default="dataset_combined.npz")
     parser.add_argument("--targets", nargs="+", default=[
         "dipole_mag_d", "e_g_ev", "e_homo_ev", "e_lumo_ev", "total_energy_ev"
@@ -97,7 +91,7 @@ def parse_args():
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--max_samples", type=int, default=0,
                         help="Limit dataset to first N samples (0 = full)")
-    parser.add_argument("--output_dir", type=str, default="results_modality/channel_perm")
+    parser.add_argument("--output_dir", type=str, default="outputs/modality/channel_perm")
     parser.add_argument("--seed", type=int, default=42, help="RNG seed for permutations")
     return parser.parse_args()
 
@@ -153,6 +147,7 @@ def main():
                 normalization_stats=norm_stats,
             )
             denormalize_fn = dataset.denormalize_label
+            dataset = test_split(dataset, int(seed))  # the checkpoint's held-out test pairs
 
             if args.max_samples > 0:
                 from torch.utils.data import Subset
@@ -219,19 +214,19 @@ def main():
     md_lines.append(f"- Targets: {', '.join(args.targets)}")
     md_lines.append(f"- Seeds: {', '.join(sorted({str(s) for t in per_target.values() for s in t['seeds']}))}")
     md_lines.append("")
-    md_lines.append("### Average % ΔMAE per Channel (across targets)")
+    md_lines.append("### Average % delta MAE per Channel (across targets)")
     md_lines.append("")
-    md_lines.append("| Channel | Avg % ΔMAE |")
+    md_lines.append("| Channel | Avg % delta MAE |")
     md_lines.append("| --- | --- |")
     for ch in sorted(avg_pct.keys(), key=lambda c: abs(avg_pct[c]), reverse=True):
         md_lines.append(f"| {ch} | {avg_pct[ch]:.3f}% |")
 
     md_lines.append("")
-    md_lines.append("### Per-Target % ΔMAE (baseline-normalized)")
+    md_lines.append("### Per-Target % delta MAE (baseline-normalized)")
     for target in per_target:
         md_lines.append(f"**{target}** (baseline MAE: {per_target[target]['baseline_mae']:.6f})")
         md_lines.append("")
-        md_lines.append("| Channel | % ΔMAE |")
+        md_lines.append("| Channel | % delta MAE |")
         md_lines.append("| --- | --- |")
         for ch in channel_keys:
             md_lines.append(f"| {ch} | {per_target[target]['pct_delta'][ch]:.3f}% |")

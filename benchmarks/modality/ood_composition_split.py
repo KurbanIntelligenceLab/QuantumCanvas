@@ -1,31 +1,22 @@
-import sys
 from pathlib import Path
-
-_script_dir = Path(__file__).resolve().parent
-_project_root = _script_dir.parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
 
 import argparse
 import json
-import time
-from typing import List, Dict, Tuple, Set
+from typing import List, Dict, Tuple
 from collections import defaultdict
 
 import numpy as np
 import torch
+
+from quantumcanvas import batch_images
 import torch.nn as nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.loader import DataLoader
-from torch_geometric.data import Data
 from tqdm import tqdm
 
-from benchmarks.twobody_dataloader import TwoBodyDataset, ELEMENT_TO_Z
-from benchmarks.models import get_model as get_benchmark_model
-from benchmarks.benchmark_config import cfg
-from benchmarks.modality.models import get_modality_model
-from benchmarks.modality.fusion_models import get_fusion_model
+from benchmarks.twobody_dataloader import TwoBodyDataset
+from benchmarks.modality.common import get_model
 
 ELEMENT_PERIOD = {
 
@@ -128,10 +119,8 @@ def create_split_indices(dataset: TwoBodyDataset, split_strategy: str,
     rng = np.random.RandomState(seed)
 
     pair_to_indices = defaultdict(list)
-    for i in range(len(dataset)):
-        data = dataset[i]
-        pair_name = data.pair_name
-        pair_to_indices[pair_name].append(i)
+    for i, raw_idx in enumerate(dataset.valid_indices):
+        pair_to_indices[str(dataset.pair_names[raw_idx])].append(i)
 
     all_pairs = list(pair_to_indices.keys())
     n_pairs = len(all_pairs)
@@ -230,7 +219,7 @@ def create_split_indices(dataset: TwoBodyDataset, split_strategy: str,
 
             sample_idx = pair_to_indices[pair_name][0]
 
-            label_dict = dataset.labels[sample_idx]
+            label_dict = dataset.labels[dataset.valid_indices[sample_idx]]
             dist = label_dict.get('distance_ang')
 
             if dist is None or np.isnan(dist) or np.isinf(dist):
@@ -307,42 +296,27 @@ def create_split_indices(dataset: TwoBodyDataset, split_strategy: str,
 
     return train_indices, val_indices, test_indices, split_info
 
-def get_model(model_type: str, device: torch.device):
-
-    modality_models = ['tabular_mlp', 'tabular_transformer', 'vision_only', 'geometry_only']
-    improved_models = ['qsn_v2', 'multimodal_v2', 'film_cnn']
-
-    if model_type in modality_models:
-        model = get_modality_model(model_type)
-    elif model_type in improved_models:
-        model = get_fusion_model(model_type)
-    else:
-        model_config = cfg.model_configs.get(model_type, {})
-        model = get_benchmark_model(model_type, **model_config)
-
-    return model.to(device)
-
 def forward_model(model, data, model_type: str, device: torch.device):
 
     if model_type in ['tabular_mlp', 'tabular_transformer', 'vision_only', 'geometry_only']:
-        images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data).to(device).float()
         return model(images, data.z, data.pos, data.batch)
 
     elif model_type == 'quantumshellnet':
-        images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data).to(device).float()
         return model(images, data.z, data.pos, data.batch)
 
     elif model_type == 'vit':
-        images = torch.stack([d.image[:3] for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data)[:, :3].to(device).float()
         return model(images)
 
     elif model_type == 'multimodal':
-        images = torch.stack([d.image[:3] for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data)[:, :3].to(device).float()
         return model(data.z, data.pos, data.batch, images)
 
     elif model_type in ['qsn_v2', 'multimodal_v2', 'film_cnn']:
 
-        images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data).to(device).float()
         return model(images, data.z, data.pos, data.batch)
 
     else:
@@ -394,8 +368,8 @@ def evaluate(model, loader, model_type, device, denormalize_fn=None):
     targets = np.concatenate(targets)
 
     if denormalize_fn is not None:
-        predictions = np.array([denormalize_fn(p) for p in predictions])
-        targets = np.array([denormalize_fn(t) for t in targets])
+        predictions = denormalize_fn(predictions)
+        targets = denormalize_fn(targets)
 
     mae = float(np.mean(np.abs(predictions - targets)))
     rmse = float(np.sqrt(np.mean((predictions - targets) ** 2)))
@@ -421,6 +395,7 @@ def train_and_evaluate_ood(model_type: str, target: str, split_strategy: str,
     train_idx, val_idx, test_idx, split_info = create_split_indices(
         full_dataset, split_strategy, seed=seed
     )
+    full_dataset.fit_normalization(train_idx)  # label scaling from the training pairs only
 
     if len(test_idx) == 0:
         print(f"Warning: No OOD test samples for {split_strategy}. Skipping.")
@@ -455,7 +430,7 @@ def train_and_evaluate_ood(model_type: str, target: str, split_strategy: str,
         if val_metrics['mae'] < best_val_mae:
             best_val_mae = val_metrics['mae']
             patience_counter = 0
-            best_state = model.state_dict().copy()
+            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
         else:
             patience_counter += 1
 
@@ -464,7 +439,10 @@ def train_and_evaluate_ood(model_type: str, target: str, split_strategy: str,
         if patience_counter >= patience:
             break
 
-    model.load_state_dict(best_state)
+    if best_state is not None:  # otherwise validation never improved: keep the final weights
+        model.load_state_dict(best_state)
+    else:
+        best_state = model.state_dict()
 
     id_metrics = evaluate(model, val_loader, model_type, device,
                          denormalize_fn=full_dataset.denormalize_label)
@@ -541,11 +519,11 @@ def run_all_ood_experiments(models: List[str], targets: List[str],
                         )
                         if result:
                             all_results.append(result)
-                            print(f"✓ {split_strategy}/{target}/{model_type}/seed_{seed}: "
+                            print(f"OK {split_strategy}/{target}/{model_type}/seed_{seed}: "
                                   f"ID={result['id_mae']:.4f}, OOD={result['ood_mae']:.4f}, "
                                   f"Gap={result['generalization_gap_pct']:+.1f}%")
                     except Exception as e:
-                        print(f"✗ {split_strategy}/{target}/{model_type}/seed_{seed}: {e}")
+                        print(f"FAILED {split_strategy}/{target}/{model_type}/seed_{seed}: {e}")
                         import traceback
                         traceback.print_exc()
 
@@ -629,9 +607,9 @@ def generate_ood_report(aggregated: Dict, output_dir: Path):
                 model = data['model_type']
                 lines.append(
                     f"    {model:<20} "
-                    f"ID: {data['id_mae_mean']:.4f}±{data['id_mae_std']:.4f}  "
-                    f"OOD: {data['ood_mae_mean']:.4f}±{data['ood_mae_std']:.4f}  "
-                    f"Gap: {data['gap_pct_mean']:+.1f}%±{data['gap_pct_std']:.1f}%"
+                    f"ID: {data['id_mae_mean']:.4f}+/-{data['id_mae_std']:.4f}  "
+                    f"OOD: {data['ood_mae_mean']:.4f}+/-{data['ood_mae_std']:.4f}  "
+                    f"Gap: {data['gap_pct_mean']:+.1f}%+/-{data['gap_pct_std']:.1f}%"
                 )
 
     lines.append("\n" + "=" * 100)
@@ -672,7 +650,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--patience", type=int, default=15)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--output_dir", type=str, default="results_modality/ood_composition")
+    parser.add_argument("--output_dir", type=str, default="outputs/modality/ood_composition")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 

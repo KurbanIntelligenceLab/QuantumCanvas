@@ -1,4 +1,6 @@
 import torch
+
+from quantumcanvas import batch_images
 import torch.nn as nn
 from torch_geometric.loader import DataLoader
 import numpy as np
@@ -6,6 +8,7 @@ import pandas as pd
 import time
 from pathlib import Path
 import json
+import argparse
 from typing import Dict
 from benchmarks.twobody_dataloader import TwoBodyDataset
 from benchmarks.models import get_model
@@ -28,22 +31,19 @@ def train_epoch(model, loader, optimizer, device, criterion, model_type='schnet'
                 out = outputs.get("energy", outputs.get("output", list(outputs.values())[0]))
             else:
                 out = outputs
-        elif model_type == 'egnn':
-
-            out = model(data.z, data.pos, data.batch)
         elif model_type == 'multimodal':
 
-            images = torch.stack([d.image[:3] for d in data.to_data_list()])
+            images = batch_images(data)[:, :3]
             images = images.to(device).float()
             out = model(data.z, data.pos, data.batch, images)
         elif model_type == 'quantumshellnet':
 
-            images = torch.stack([d.image for d in data.to_data_list()])
+            images = batch_images(data)
             images = images.to(device).float()
             out = model(images, data.z, data.pos, data.batch)
         elif model_type == 'vit':
 
-            images = torch.stack([d.image[:3] for d in data.to_data_list()])
+            images = batch_images(data)[:, :3]
             images = images.to(device).float()
             out = model(images)
         else:
@@ -80,22 +80,19 @@ def evaluate(model, loader, device, criterion, model_type='schnet', denormalize_
                 out = outputs.get("energy", outputs.get("output", list(outputs.values())[0]))
             else:
                 out = outputs
-        elif model_type == 'egnn':
-
-            out = model(data.z, data.pos, data.batch)
         elif model_type == 'multimodal':
 
-            images = torch.stack([d.image[:3] for d in data.to_data_list()])
+            images = batch_images(data)[:, :3]
             images = images.to(device).float()
             out = model(data.z, data.pos, data.batch, images)
         elif model_type == 'quantumshellnet':
 
-            images = torch.stack([d.image for d in data.to_data_list()])
+            images = batch_images(data)
             images = images.to(device).float()
             out = model(images, data.z, data.pos, data.batch)
         elif model_type == 'vit':
 
-            images = torch.stack([d.image[:3] for d in data.to_data_list()])
+            images = batch_images(data)[:, :3]
             images = images.to(device).float()
             out = model(images)
         else:
@@ -122,8 +119,8 @@ def evaluate(model, loader, device, criterion, model_type='schnet', denormalize_
     targets = np.concatenate(targets)
 
     if denormalize_fn is not None:
-        predictions = np.array([denormalize_fn(p) for p in predictions])
-        targets = np.array([denormalize_fn(t) for t in targets])
+        predictions = denormalize_fn(predictions)
+        targets = denormalize_fn(targets)
 
     mae = np.mean(np.abs(predictions - targets))
     rmse = np.sqrt(np.mean((predictions - targets) ** 2))
@@ -141,8 +138,12 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
     print("=" * 70)
     print(f"Save directory: {save_dir}")
 
-    temp_dataset = TwoBodyDataset(dataset_path, target_label=target, verbose=False, normalize_labels=False)
-    n_samples = len(temp_dataset)
+    # Every model starts from the same RNG state, so results don't depend on which other models are trained.
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    full_dataset = TwoBodyDataset(dataset_path, target_label=target, verbose=True, normalize_labels=True)
+    n_samples = len(full_dataset)
     n_train = int(cfg.train_split * n_samples)
     n_val = int(cfg.val_split * n_samples)
 
@@ -151,21 +152,11 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
     val_indices = indices[n_train:n_train+n_val].tolist()
     test_indices = indices[n_train+n_val:].tolist()
 
-    print("\nLoading training dataset...")
-    train_dataset_full = TwoBodyDataset(dataset_path, target_label=target, verbose=True, normalize_labels=True)
-    train_dataset = train_dataset_full[train_indices]
-
-    norm_stats = train_dataset_full.get_normalization_stats()
-
-    print("\nLoading validation dataset...")
-    val_dataset_full = TwoBodyDataset(dataset_path, target_label=target, verbose=False,
-                                       normalize_labels=True, normalization_stats=norm_stats)
-    val_dataset = val_dataset_full[val_indices]
-
-    print("Loading test dataset...")
-    test_dataset_full = TwoBodyDataset(dataset_path, target_label=target, verbose=False,
-                                        normalize_labels=True, normalization_stats=norm_stats)
-    test_dataset = test_dataset_full[test_indices]
+    # Label scaling is fitted on the training split only.
+    norm_stats = full_dataset.fit_normalization(train_indices)
+    train_dataset = full_dataset[train_indices]
+    val_dataset = full_dataset[val_indices]
+    test_dataset = full_dataset[test_indices]
 
     print(f"Split: Train={len(train_dataset)}, Val={len(val_dataset)}, Test={len(test_dataset)}")
 
@@ -220,7 +211,7 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                                factor=0.8, patience=10, min_lr=1e-6)
 
-    denormalize_fn = train_dataset_full.denormalize_label
+    denormalize_fn = full_dataset.denormalize_label
 
     print("\nStarting training...")
     best_val_loss = float('inf')
@@ -277,7 +268,7 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
                 'val_loss': val_loss,
                 'val_mae': val_mae,
                 'val_rmse': val_rmse,
@@ -300,7 +291,7 @@ def train_model(model_type: str, dataset_path: str, target: str, seed: int,
 
     best_model_path = save_dir / 'best_model.pt'
     if best_model_path.exists():
-        checkpoint = torch.load(best_model_path, weights_only=False)
+        checkpoint = torch.load(best_model_path, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint['model_state_dict'])
 
     test_loss, test_mae, test_rmse = evaluate(model, test_loader, device, criterion, model_type, denormalize_fn)
@@ -369,9 +360,6 @@ def run_single_experiment(seed: int, target: str, device: torch.device,
     print(f"  Target: {target}")
     print(f"  Seed: {seed}")
 
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-
     all_results = {}
     for model_type in models_to_train:
         try:
@@ -386,7 +374,7 @@ def run_single_experiment(seed: int, target: str, device: torch.device,
             if results:
                 all_results[model_type] = results
         except Exception as e:
-            print(f"\n❌ Error training {model_type}: {e}")
+            print(f"\nFAILED: Error training {model_type}: {e}")
             import traceback
             traceback.print_exc()
             continue
@@ -411,14 +399,14 @@ def run_single_experiment(seed: int, target: str, device: torch.device,
                 'models': all_results
             }, f, indent=2)
 
-        print("\n✓ Experiment complete!")
+        print("\nOK Experiment complete!")
         print(f"  Summary: {summary_path}")
     else:
-        print(f"\n❌ No models successfully trained for target={target}, seed={seed}")
+        print(f"\nFAILED: No models successfully trained for target={target}, seed={seed}")
 
     return all_results
 
-def main():
+def main(models_to_train=None, output_dir='outputs/twobody'):
 
     cfg.print_summary()
 
@@ -426,15 +414,15 @@ def main():
     print(f"\nUsing device: {device}")
 
     dataset_path = cfg.dataset_path
-    base_save_dir = Path('results_twobody')
+    base_save_dir = Path(output_dir)
     base_save_dir.mkdir(exist_ok=True, parents=True)
 
-    models_to_train = cfg.available_models
+    models_to_train = models_to_train or cfg.available_models
 
     print("\n" + "=" * 70)
     print("STARTING COMPREHENSIVE BENCHMARK")
     print("=" * 70)
-    print(f"  Total experiments: {len(cfg.targets)} targets × {len(cfg.seeds)} seeds = {cfg.total_experiments} runs")
+    print(f"  Total experiments: {len(cfg.targets)} targets x {len(cfg.seeds)} seeds = {cfg.total_experiments} runs")
     print(f"  Total model trainings: {cfg.total_experiments * len(models_to_train)}")
     print()
 
@@ -476,34 +464,37 @@ def main():
             'results': global_results
         }, f, indent=2)
 
-    print("\n✓ All benchmarks complete!")
+    print("\nOK All benchmarks complete!")
     print(f"  Total experiments: {experiment_count}")
     print(f"  Comprehensive summary: {comprehensive_summary_path}")
-    print("\nResults directory structure:")
-    print("  results_twobody/")
-    print("    ├── comprehensive_benchmark_summary.json")
-    for target in cfg.targets[:2]:
-        print(f"    ├── {target}/")
-        for seed in cfg.seeds[:2]:
-            print(f"    │   ├── benchmark_summary_seed_{seed}.json")
-        for model in models_to_train[:2]:
-            print(f"    │   ├── {model}/")
-            for seed in cfg.seeds[:2]:
-                print(f"    │   │   ├── seed_{seed}/")
-                print("    │   │   │   ├── best_model.pt")
-                print("    │   │   │   ├── results.json")
-                print("    │   │   │   └── training_history.csv")
-            print("    │   │   └── ...")
-        print("    │   └── ...")
-    print("    └── ...")
+    print(f"  Per-run results: {base_save_dir}/<target>/<model>/seed_<seed>/")
+
+def parse_args():
+    # Defaults come from benchmarks/benchmark_config.py (the protocol used in the paper).
+    p = argparse.ArgumentParser(description='Train every benchmark model on every target and seed.')
+    p.add_argument('--dataset_path', default=cfg.dataset_path)
+    p.add_argument('--output_dir', default='outputs/twobody')
+    p.add_argument('--models', nargs='+', default=None, choices=cfg.available_models,
+                   help='subset of models (default: all)')
+    p.add_argument('--targets', nargs='+', default=None, help='subset of label keys (default: all benchmark targets)')
+    p.add_argument('--seeds', nargs='+', type=int, default=None)
+    p.add_argument('--epochs', type=int, default=None)
+    return p.parse_args()
 
 if __name__ == '__main__':
+    args = parse_args()
+    cfg.data.dataset_path = args.dataset_path
+    if args.targets:
+        cfg.experiment.targets = args.targets
+    if args.seeds:
+        cfg.experiment.seeds = args.seeds
+    if args.epochs:
+        cfg.training.epochs = args.epochs
+        cfg.scheduler.update_epochs(args.epochs)
 
     if not Path(cfg.dataset_path).exists():
         print(f"ERROR: Dataset not found at {cfg.dataset_path}")
-        print("\nPlease build the dataset first:")
-        print("  python build_dataset.py")
+        print("Download it with:  python -c 'import quantumcanvas; quantumcanvas.download()'")
         exit(1)
 
-    main()
-
+    main(models_to_train=args.models, output_dir=args.output_dir)

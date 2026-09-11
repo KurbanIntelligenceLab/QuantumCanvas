@@ -1,10 +1,4 @@
-import sys
 from pathlib import Path
-
-_script_dir = Path(__file__).resolve().parent
-_project_root = _script_dir.parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
 
 import argparse
 import json
@@ -13,6 +7,8 @@ from datetime import datetime
 
 import numpy as np
 import torch
+
+from quantumcanvas import batch_images
 import torch.nn as nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -20,10 +16,7 @@ from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
 from benchmarks.twobody_dataloader import TwoBodyDataset
-from benchmarks.models import get_model as get_benchmark_model
-from benchmarks.benchmark_config import cfg
-from benchmarks.modality.models import get_modality_model
-from benchmarks.modality.fusion_models import get_fusion_model
+from benchmarks.modality.common import get_model
 
 SEEDS = [42, 123, 456]
 TARGETS = ['e_g_ev', 'total_energy_ev', 'e_homo_ev', 'e_lumo_ev', 'dipole_mag_d',
@@ -35,53 +28,36 @@ BATCH_SIZE = 64
 EPOCHS = 100
 LR = 1e-3
 PATIENCE = 15
-DEVICE = None
-OUTPUT_DIR = "results_modality/modality_ablation"
-
-def get_model(model_type: str, device: torch.device):
-
-    modality_models = ['tabular_mlp', 'tabular_transformer', 'vision_only', 'geometry_only']
-    improved_models = ['qsn_v2', 'multimodal_v2', 'film_cnn']
-
-    if model_type in modality_models:
-        model = get_modality_model(model_type)
-    elif model_type in improved_models:
-        model = get_fusion_model(model_type)
-    else:
-
-        model_config = cfg.model_configs.get(model_type, {})
-        model = get_benchmark_model(model_type, **model_config)
-
-    return model.to(device)
+OUTPUT_DIR = "outputs/modality/modality_ablation"
 
 def forward_model(model, data, model_type: str, device: torch.device):
 
     if model_type in ['tabular_mlp', 'tabular_transformer', 'vision_only']:
 
-        images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data).to(device).float()
         return model(images, data.z, data.pos, data.batch)
 
     elif model_type == 'geometry_only':
 
-        images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data).to(device).float()
         return model(images, data.z, data.pos, data.batch)
 
     elif model_type == 'quantumshellnet':
-        images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data).to(device).float()
         return model(images, data.z, data.pos, data.batch)
 
     elif model_type == 'vit':
 
-        images = torch.stack([d.image[:3] for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data)[:, :3].to(device).float()
         return model(images)
 
     elif model_type == 'multimodal':
-        images = torch.stack([d.image[:3] for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data)[:, :3].to(device).float()
         return model(data.z, data.pos, data.batch, images)
 
     elif model_type in ['qsn_v2', 'multimodal_v2', 'film_cnn']:
 
-        images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data).to(device).float()
         return model(images, data.z, data.pos, data.batch)
 
     else:
@@ -136,8 +112,8 @@ def evaluate(model, loader, model_type, device, denormalize_fn=None):
     targets = np.concatenate(targets)
 
     if denormalize_fn is not None:
-        predictions = np.array([denormalize_fn(p) for p in predictions])
-        targets = np.array([denormalize_fn(t) for t in targets])
+        predictions = denormalize_fn(predictions)
+        targets = denormalize_fn(targets)
 
     mae = float(np.mean(np.abs(predictions - targets)))
     rmse = float(np.sqrt(np.mean((predictions - targets) ** 2)))
@@ -169,6 +145,7 @@ def train_single(model_type: str, target: str, seed: int, dataset_path: str,
     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
         full_dataset, [n_train, n_val, n_test], generator=generator
     )
+    full_dataset.fit_normalization(train_dataset.indices)  # label scaling from the training split only
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
@@ -183,6 +160,7 @@ def train_single(model_type: str, target: str, seed: int, dataset_path: str,
 
     best_val_mae = float('inf')
     best_epoch = 0
+    best_state = None
     patience_counter = 0
 
     train_losses = []
@@ -204,7 +182,7 @@ def train_single(model_type: str, target: str, seed: int, dataset_path: str,
             best_val_mae = val_metrics['mae']
             best_epoch = epoch
             patience_counter = 0
-            best_state = model.state_dict().copy()
+            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
         else:
             patience_counter += 1
 
@@ -221,7 +199,10 @@ def train_single(model_type: str, target: str, seed: int, dataset_path: str,
 
     train_time = time.time() - start_time
 
-    model.load_state_dict(best_state)
+    if best_state is not None:  # otherwise validation never improved: keep the final weights
+        model.load_state_dict(best_state)
+    else:
+        best_state = model.state_dict()
     test_metrics = evaluate(model, test_loader, model_type, device,
                            denormalize_fn=full_dataset.denormalize_label)
     val_metrics_final = evaluate(model, val_loader, model_type, device,
@@ -270,7 +251,7 @@ def run_all_experiments(models: list, targets: list, seeds: list,
     all_results = []
 
     total_runs = len(models) * len(targets) * len(seeds)
-    print(f"\nRunning {total_runs} experiments: {len(models)} models × {len(targets)} targets × {len(seeds)} seeds")
+    print(f"\nRunning {total_runs} experiments: {len(models)} models x {len(targets)} targets x {len(seeds)} seeds")
     print(f"Models: {models}")
     print(f"Targets: {targets}")
     print(f"Seeds: {seeds}")
@@ -294,11 +275,11 @@ def run_all_experiments(models: list, targets: list, seeds: list,
                         verbose=verbose
                     )
                     all_results.append(result)
-                    print(f"✓ {model_type}/{target}/seed_{seed}: "
+                    print(f"OK {model_type}/{target}/seed_{seed}: "
                           f"test_mae={result['test_mae']:.4f}, "
                           f"test_rmse={result['test_rmse']:.4f}")
                 except Exception as e:
-                    print(f"✗ {model_type}/{target}/seed_{seed}: {e}")
+                    print(f"FAILED {model_type}/{target}/seed_{seed}: {e}")
                     import traceback
                     traceback.print_exc()
 
@@ -348,7 +329,7 @@ def generate_summary_table(aggregated: dict, output_dir: Path):
 
     lines = []
     lines.append("=" * 100)
-    lines.append("MODALITY ABLATION RESULTS (Test MAE ± std)")
+    lines.append("MODALITY ABLATION RESULTS (Test MAE +/- std)")
     lines.append("=" * 100)
 
     header = f"{'Model':<25}" + "".join(f"{t:<15}" for t in targets)
@@ -361,7 +342,7 @@ def generate_summary_table(aggregated: dict, output_dir: Path):
             key = f"{model}/{target}"
             if key in aggregated:
                 v = aggregated[key]
-                row += f"{v['test_mae_mean']:.4f}±{v['test_mae_std']:.4f}  "
+                row += f"{v['test_mae_mean']:.4f}+/-{v['test_mae_std']:.4f}  "
             else:
                 row += f"{'N/A':<15}"
         lines.append(row)

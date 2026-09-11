@@ -1,4 +1,6 @@
 import torch
+
+from benchmarks.pairs import pair_view
 import torch.nn as nn
 from torch_geometric.nn import SchNet
 from faenet import FAENet
@@ -116,18 +118,6 @@ class FAENetRegressor(nn.Module):
         )
         batch.tags = batch.tag
 
-        if hasattr(batch, "to_data_list"):
-            for data in batch.to_data_list():
-                if (
-                    (not hasattr(data, "tag"))
-                    or (data.tag is None)
-                    or (not isinstance(data.tag, torch.Tensor))
-                ):
-                    data.tag = torch.zeros(
-                        data.pos.size(0), dtype=torch.long, device=data.pos.device
-                    )
-                data.tags = data.tag
-
         return batch
 
 class GotenNetRegressor(nn.Module):
@@ -153,49 +143,34 @@ class GotenNetRegressor(nn.Module):
             x = scatter_mean(h, batch, dim=0)
         return self.regressor(x).squeeze()
 
-class EGNNRegressor(nn.Module):
-    def __init__(self, n_layers=3, feats_dim=1, pos_dim=3, m_dim=128, update_coors=True, update_feats=True, norm_feats=True, norm_coors=False, dropout=0.0, coor_weights_clamp_value=2.0):
+class GCNRegressor(nn.Module):
+    """GCN on a k-nearest-neighbour graph of the atoms ("GCN" in the paper; formerly the `egnn` model key)."""
+
+    def __init__(self, n_layers=3, hidden_channels=128, dropout=0.1, k=5):
         super().__init__()
+        from torch_geometric.nn import GCNConv
 
-        from torch_geometric.nn import GCNConv, global_mean_pool
-
-        self.embedding = nn.Embedding(100, m_dim)
-
-        self.convs = nn.ModuleList([
-            GCNConv(m_dim, m_dim) for _ in range(n_layers)
-        ])
-
+        self.k = k
+        self.embedding = nn.Embedding(100, hidden_channels)
+        self.convs = nn.ModuleList([GCNConv(hidden_channels, hidden_channels) for _ in range(n_layers)])
         self.regressor = nn.Sequential(
-            nn.Linear(m_dim, m_dim // 2),
+            nn.Linear(hidden_channels, hidden_channels // 2),
             nn.ReLU(),
-            nn.Dropout(dropout if dropout > 0 else 0.1),
-            nn.Linear(m_dim // 2, m_dim // 4),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels // 2, hidden_channels // 4),
             nn.ReLU(),
-            nn.Dropout(dropout if dropout > 0 else 0.1),
-            nn.Linear(m_dim // 4, 1)
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels // 4, 1)
         )
 
     def forward(self, z, pos, batch):
-        from torch_geometric.nn import knn_graph
+        from torch_geometric.nn import global_mean_pool, knn_graph
 
-        edge_index = knn_graph(pos, k=5, batch=batch)
-
+        edge_index = knn_graph(pos, k=self.k, batch=batch)
         x = self.embedding(z)
-
         for conv in self.convs:
-            x = conv(x, edge_index)
-            x = torch.relu(x)
-
-        if batch is None:
-            pooled = torch.mean(x, dim=0, keepdim=True)
-        else:
-            try:
-                from torch_scatter import scatter_mean
-                pooled = scatter_mean(x, batch, dim=0)
-            except ImportError:
-                pooled = torch.mean(x, dim=0, keepdim=True)
-
-        return self.regressor(pooled).squeeze()
+            x = torch.relu(conv(x, edge_index))
+        return self.regressor(global_mean_pool(x, batch)).squeeze()
 
 class GATv2Regressor(nn.Module):
 
@@ -329,26 +304,11 @@ class QuantumShellNet(nn.Module):
 
         batch_size = images.size(0)
 
-        mass_nums = []
-        atom_nums = []
-        neutron_nums = []
-
-        for i in range(batch_size):
-            mask = batch == i
-            z_mol = z[mask]
-
-            atom_num = z_mol.sum().float()
-            atom_nums.append(atom_num)
-
-            mass_num = (z_mol.float() * 2).sum()
-            mass_nums.append(mass_num)
-
-            neutron_num = mass_num - atom_num
-            neutron_nums.append(neutron_num)
-
-        mass_num = torch.stack(mass_nums).unsqueeze(1).to(images.device)
-        atom_num = torch.stack(atom_nums).unsqueeze(1).to(images.device)
-        neutron_num = torch.stack(neutron_nums).unsqueeze(1).to(images.device)
+        # Mass number approximated as 2Z, so neutron count = Z.
+        zz = pair_view(z, pos, batch, batch_size)[0].float()
+        atom_num = zz.sum(1, keepdim=True)
+        mass_num = (zz * 2).sum(1, keepdim=True)
+        neutron_num = mass_num - atom_num
 
         x = self.activation(self.conv1(images))
         x = self.dropout(x)
@@ -442,24 +402,13 @@ class MultiModalRegressor(nn.Module):
 
         return output.squeeze()
 
-    def get_modality_contributions(self, z, pos, batch, images):
-
-        schnet_features = self.schnet(z, pos, batch)
-        image_features = self.resnet(images)
-        image_features = image_features.view(image_features.size(0), -1)
-
-        return {
-            'gnn_features': schnet_features,
-            'image_features': image_features
-        }
-
 def get_model(model_type, **kwargs):
 
     models = {
         'schnet': SchNetRegressor,
         'faenet': FAENetRegressor,
         'gotennet': GotenNetRegressor,
-        'egnn': EGNNRegressor,
+        'gcn': GCNRegressor,
         'gatv2': GATv2Regressor,
         'dimenet': DimeNetRegressor,
         'vit': ViTRegressor,
@@ -467,6 +416,7 @@ def get_model(model_type, **kwargs):
         'multimodal': MultiModalRegressor
     }
 
+    model_type = {'egnn': 'gcn'}.get(model_type, model_type)  # old name of the GCN model
     if model_type not in models:
         raise ValueError(f"Unknown model type: {model_type}. Available: {list(models.keys())}")
 

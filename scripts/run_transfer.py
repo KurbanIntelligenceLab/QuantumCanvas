@@ -1,5 +1,4 @@
 import argparse, json, os, sys, time, inspect, numpy as np, torch
-sys.path.insert(0, os.getcwd())
 from torch_geometric.loader import DataLoader
 import benchmarks.models as M
 
@@ -33,11 +32,11 @@ def get_case(case, seed, mname='schnet'):
         mu, sd = float(ys.mean()), float(ys.std())
         gy = lambda d: (d.energy.view(-1) - mu) / sd
         return ds, tr, va, te, MODEL_CONFIGS[mname], TRAINING_CONFIG, gy, (mu, sd)
-    from benchmarks.crysmtm.regression_dataloader import RegressionLoader
+    from benchmarks.crysmtm import PROPERTIES, RegressionLoader, group_split
     from benchmarks.crysmtm_config import MODEL_CONFIGS, TRAINING_CONFIG
-    pi = ['HOMO','LUMO','Eg','Ef','Et','Eta','disp','vol','bond'].index(key)
-    ds = RegressionLoader(label_dir='./data/CrysMTM', modalities=['xyz','element'], as_pyg_data=True)
-    tr, va, te = split(len(ds), seed, (0.7, 0.1))
+    pi = PROPERTIES.index(key)
+    ds = RegressionLoader(label_dir='./data/CrysMTM')
+    tr, va, te = group_split(ds.groups, seed, (0.7, 0.1))
     ys = torch.tensor([float(ds[int(i)].y.view(-1)[pi]) for i in tr])
     mu, sd = float(ys.mean()), float(ys.std())
     gy = lambda d: (d.y.view(d.num_graphs, -1)[:, pi] - mu) / sd
@@ -65,7 +64,7 @@ p.add_argument('--clip', type=float, default=1.0)
 p.add_argument('--load', choices=['full','encoder'], default='encoder')
 p.add_argument('--lr', type=float, default=None)
 p.add_argument('--model', default='schnet')
-p.add_argument('--outdir', default='runs')
+p.add_argument('--output_dir', '--outdir', dest='outdir', default='outputs/transfer')
 a = p.parse_args()
 tag = f"{a.case.replace(':','_')}__{a.model}__seed{a.seed}__{a.arm}"
 od = os.path.join(a.outdir, tag); os.makedirs(od, exist_ok=True)
@@ -82,7 +81,9 @@ tel = DataLoader([ds[int(i)] for i in te], batch_size=bs)
 model = build(a.model, mcfg).to(dev)
 lr = a.lr if a.lr is not None else tcfg.get('lr_finetune' if a.arm=='pretrained' else 'lr_scratch', tcfg.get('lr', 1e-4))
 loaded = False
-if a.arm == 'pretrained' and a.ckpt and os.path.exists(a.ckpt):
+if a.arm == 'pretrained' and not (a.ckpt and os.path.exists(a.ckpt)):
+    sys.exit(f"--arm pretrained needs an existing --ckpt (got {a.ckpt!r}); see scripts/pretrain_twobody.py")
+if a.arm == 'pretrained':
     ck = torch.load(a.ckpt, map_location=dev, weights_only=False)
     sd_ = ck.get('model_state_dict', ck)
     if a.load == 'encoder':

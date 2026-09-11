@@ -1,10 +1,4 @@
-import sys
 from pathlib import Path
-
-_script_dir = Path(__file__).resolve().parent
-_project_root = _script_dir.parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
 
 import argparse
 import json
@@ -12,17 +6,19 @@ from typing import Optional, List, Dict, Any
 
 import numpy as np
 import torch
+
+from quantumcanvas import batch_images
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
 from benchmarks.twobody_dataloader import TwoBodyDataset
 from benchmarks.models import get_model as get_benchmark_model
-from benchmarks.benchmark_config import cfg
 from benchmarks.modality.models import get_modality_model
 from benchmarks.modality.fusion_models import get_fusion_model
+from benchmarks.modality.common import test_split
 
-RESULTS_DIR = "results_modality"
-MODALITY_RESULTS_DIR = "results_modality/modality_ablation"
+RESULTS_DIR = "outputs/modality"
+MODALITY_RESULTS_DIR = "outputs/modality/modality_ablation"
 DATASET_PATH = "dataset_combined.npz"
 MODELS = ["qsn_v2", "multimodal_v2", "film_cnn", "tabular_mlp", "vision_only", "geometry_only"]
 SEEDS = ["42", "123", "456"]
@@ -48,29 +44,29 @@ def forward_model(model, data, model_type: str, device: torch.device,
     z = z_override if z_override is not None else data.z
 
     if model_type in ['tabular_mlp', 'tabular_transformer', 'vision_only']:
-        images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data).to(device).float()
         return model(images, z, data.pos, data.batch)
 
     elif model_type == 'geometry_only':
-        images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data).to(device).float()
         return model(images, z, data.pos, data.batch)
 
     elif model_type == 'quantumshellnet':
-        images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data).to(device).float()
         return model(images, z, data.pos, data.batch)
 
     elif model_type == 'vit':
 
-        images = torch.stack([d.image[:3] for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data)[:, :3].to(device).float()
         return model(images)
 
     elif model_type == 'multimodal':
-        images = torch.stack([d.image[:3] for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data)[:, :3].to(device).float()
         return model(z, data.pos, data.batch, images)
 
     elif model_type in ['qsn_v2', 'multimodal_v2', 'film_cnn']:
 
-        images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data).to(device).float()
         return model(images, z, data.pos, data.batch)
 
     else:
@@ -181,7 +177,7 @@ def run_single_checkpoint(checkpoint_path: str, dataset_path: str,
         normalization_stats=norm_stats
     )
 
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    loader = DataLoader(test_split(dataset, seed), batch_size=batch_size, shuffle=False, num_workers=0)
 
     results = {
         'checkpoint': checkpoint_path,
@@ -306,7 +302,7 @@ def generate_report(aggregated: Dict, output_dir: Path):
             lines.append(f"\n  {model_type}:")
 
             normal = data['ablations'].get('normal', {})
-            lines.append(f"    Normal (baseline):  MAE = {normal.get('mae_mean', 0):.4f} ± {normal.get('mae_std', 0):.4f}")
+            lines.append(f"    Normal (baseline):  MAE = {normal.get('mae_mean', 0):.4f} +/- {normal.get('mae_std', 0):.4f}")
 
             for abl_type in ['shuffle', 'shuffle_within_sample', 'mask', 'random', 'constant']:
                 if abl_type in data['ablations']:
@@ -314,7 +310,7 @@ def generate_report(aggregated: Dict, output_dir: Path):
                     delta_pct = abl.get('relative_change_pct_mean', 0)
                     delta_sign = "+" if delta_pct >= 0 else ""
                     lines.append(
-                        f"    {abl_type:<20} MAE = {abl['mae_mean']:.4f} ± {abl['mae_std']:.4f}  "
+                        f"    {abl_type:<20} MAE = {abl['mae_mean']:.4f} +/- {abl['mae_std']:.4f}  "
                         f"Delta% = {delta_sign}{delta_pct:.1f}%"
                     )
 
@@ -361,7 +357,7 @@ def main():
     parser.add_argument("--dataset_path", type=str, default=DATASET_PATH)
     parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--output_dir", type=str, default="results_modality/element_shuffle_ablation")
+    parser.add_argument("--output_dir", type=str, default="outputs/modality/element_shuffle_ablation")
     args = parser.parse_args()
 
     device = torch.device(args.device) if args.device else torch.device(

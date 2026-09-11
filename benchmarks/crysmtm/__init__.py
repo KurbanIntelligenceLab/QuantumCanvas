@@ -1,4 +1,3 @@
-from .regression_dataloader import RegressionLoader, LabelNormalizer
+from .regression_dataloader import PROPERTIES, RegressionLoader, group_split
 
-__all__ = ['RegressionLoader', 'LabelNormalizer']
-
+__all__ = ['PROPERTIES', 'RegressionLoader', 'group_split']
