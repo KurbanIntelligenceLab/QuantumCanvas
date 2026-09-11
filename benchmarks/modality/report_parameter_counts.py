@@ -1,10 +1,3 @@
-import sys
-from pathlib import Path
-
-_script_dir = Path(__file__).resolve().parent
-_project_root = _script_dir.parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
 
 from benchmarks.modality.models import get_modality_model
 from benchmarks.modality.fusion_models import get_fusion_model
@@ -41,21 +34,14 @@ def main():
         except Exception as e:
             print(f"  {name:<25} ERROR: {e}")
 
-    print("\nBenchmark Models (for reference):")
+    print("\nBenchmark Models (as configured in benchmark_config.py):")
     print("-" * 40)
-    try:
-        from benchmarks.models import QuantumShellNet, ViTRegressor
+    from benchmarks.benchmark_config import cfg
+    from benchmarks.models import get_model
+    for name in ['quantumshellnet', 'vit', 'multimodal']:
+        model = get_model(name, **cfg.model_configs.get(name, {}))
+        print(f"  {name:<25} {count_params(model):>10,} params")
 
-        qsn = QuantumShellNet()
-        print(f"  {'quantumshellnet':<25} {count_params(qsn):>10,} params")
-
-        vit = ViTRegressor()
-        print(f"  {'vit':<25} {count_params(vit):>10,} params")
-    except ImportError as e:
-        print(f"  (Could not import benchmark models: {e})")
-
-    print("=" * 60)
-    print("Target: ~300-350K params for fair comparison")
     print("=" * 60)
 
 if __name__ == "__main__":

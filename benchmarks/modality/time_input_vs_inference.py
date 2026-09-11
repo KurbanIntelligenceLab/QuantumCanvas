@@ -6,16 +6,15 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 import torch
+
+from quantumcanvas import batch_images
 from torch_geometric.loader import DataLoader
 
+from benchmarks.modality.common import maybe_sync as _maybe_sync
 from benchmarks.twobody_dataloader import TwoBodyDataset, ELEMENT_TO_Z
 from benchmarks.models import get_model
 from benchmarks.benchmark_config import cfg
-from build_dataset import DetailedOutParser, GeometryParser, ImageEncoder
-
-def _maybe_sync(device: torch.device):
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
+from quantumcanvas.build import DetailedOutParser, GeometryParser, ImageEncoder
 
 def time_image_generation(raw_data_dir: Path, max_samples: int):
     detailed_files = sorted(raw_data_dir.glob("*/detailed.out"))
@@ -69,16 +68,14 @@ def _forward_model(model, data, model_type: str, device: torch.device):
         if isinstance(outputs, dict):
             return outputs.get("energy", outputs.get("output", list(outputs.values())[0]))
         return outputs
-    if model_type == "egnn":
-        return model(data.z, data.pos, data.batch)
     if model_type == "multimodal":
-        images = torch.stack([d.image[:3] for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data)[:, :3].to(device).float()
         return model(data.z, data.pos, data.batch, images)
     if model_type == "quantumshellnet":
-        images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data).to(device).float()
         return model(images, data.z, data.pos, data.batch)
     if model_type == "vit":
-        images = torch.stack([d.image[:3] for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data)[:, :3].to(device).float()
         return model(images)
     return model(data.z, data.pos, data.batch)
 
@@ -198,7 +195,7 @@ def main():
                 "geometry_only": time_geometry_generation(raw_data_dir, args.max_samples),
             },
         }
-        output_json = args.output_json or "results_twobody/timing_input_generation.json"
+        output_json = args.output_json or "outputs/twobody/timing_input_generation.json"
         output_path = Path(output_json)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w") as f:
@@ -250,7 +247,7 @@ def main():
 
     output_json = args.output_json
     if output_json is None:
-        output_json = f"results_twobody/timing_{args.target}.json"
+        output_json = f"outputs/twobody/timing_{args.target}.json"
 
     output_path = Path(output_json)
     output_path.parent.mkdir(parents=True, exist_ok=True)

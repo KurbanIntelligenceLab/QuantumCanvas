@@ -1,4 +1,7 @@
 data
+analysis/
+outputs/
+dataset_combined.npz
 development/
 
 # Byte-compiled / optimized / DLL files

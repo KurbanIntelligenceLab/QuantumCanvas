@@ -1,0 +1,73 @@
+cff-version: 1.2.0
+message: "If you use QuantumCanvas, please cite the paper below."
+title: "QuantumCanvas: A Multimodal Benchmark for Learning Two-Body Quantum Interactions"
+type: software
+license: MIT
+repository-code: "https://github.com/KurbanIntelligenceLab/QuantumCanvas"
+version: 1.0.1
+date-released: "2026-09-10"
+authors:
+  - family-names: Polat
+    given-names: Can
+    affiliation: "Texas A&M University"
+    orcid: "https://orcid.org/0000-0002-1458-302X"
+  - family-names: Kurban
+    given-names: Mustafa
+    affiliation: "Texas A&M University at Qatar; Ankara University"
+    orcid: "https://orcid.org/0000-0002-7263-0234"
+  - family-names: Serpedin
+    given-names: Erchin
+    affiliation: "Texas A&M University"
+    orcid: "https://orcid.org/0000-0001-9069-770X"
+  - family-names: Kurban
+    given-names: Hasan
+    affiliation: "Hamad Bin Khalifa University"
+    orcid: "https://orcid.org/0000-0003-3142-2866"
+keywords:
+  - machine learning for interatomic interactions
+  - two-body quantum systems
+  - multimodal benchmark
+  - orbital-image representations
+  - molecular property prediction
+identifiers:
+  - type: doi
+    value: 10.1088/2632-2153/aea5d6
+    description: "Paper (Machine Learning: Science and Technology)"
+  - type: doi
+    value: 10.5281/zenodo.20631934
+    description: "Dataset (Zenodo)"
+preferred-citation:
+  type: article
+  title: "QuantumCanvas: a multimodal benchmark for learning two-body quantum interactions"
+  journal: "Machine Learning: Science and Technology"
+  year: 2026
+  doi: 10.1088/2632-2153/aea5d6
+  url: "http://iopscience.iop.org/article/10.1088/2632-2153/aea5d6"
+  authors:
+    - family-names: Polat
+      given-names: Can
+    - family-names: Kurban
+      given-names: Mustafa
+    - family-names: Serpedin
+      given-names: Erchin
+    - family-names: Kurban
+      given-names: Hasan
+references:
+  - type: data
+    title: "QuantumCanvas: A Multimodal Benchmark for Learning Two-Body Quantum Interactions"
+    doi: 10.5281/zenodo.20631934
+    url: "https://doi.org/10.5281/zenodo.20631934"
+    publisher:
+      name: Zenodo
+    version: 1.0.0
+    year: 2026
+    license: CC-BY-4.0
+    authors:
+      - family-names: Polat
+        given-names: Can
+      - family-names: Kurban
+        given-names: Mustafa
+      - family-names: Serpedin
+        given-names: Erchin
+      - family-names: Kurban
+        given-names: Hasan

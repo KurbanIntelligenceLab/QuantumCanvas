@@ -1,15 +1,12 @@
-# Results deposited for the manuscript
+# Results
 
-Every numeric claim in the manuscript and supplementary information is
-computed from one of the files below, so the reported numbers can be checked
-without rerunning any training.
+Per-run CSVs behind the transfer, control and verification experiments in the
+paper ([doi:10.1088/2632-2153/aea5d6](https://doi.org/10.1088/2632-2153/aea5d6)).
 
-Table 4 of the manuscript is a strict aggregation of `per_seed.csv`: group by
+The transfer-learning table in the paper aggregates `per_seed.csv`: group by
 encoder, case and arm, then take the mean and sample standard deviation
 (`ddof=1`) of `test_mae` over the three seeds. The percentage change is
-`100 * (pretrained_mean - scratch_mean) / scratch_mean`. Applying that rule to
-the 96 rows reproduces every printed cell, so the table can be checked without
-rerunning training.
+`100 * (pretrained_mean - scratch_mean) / scratch_mean`.
 
 ## Transfer experiments
 
@@ -39,9 +36,16 @@ part of this deposit.
 | `label_readout_channel_ablation.csv` | Channel-masking ablation on the dipole and charge targets, separating targets rendered directly into an input channel from those that must be inferred. |
 | `charge_target_verification.csv` | Charge conservation residuals and the pairwise redundancy checks establishing that the three charge-magnitude targets are one quantity. |
 
-## Reproducing individual runs
+## Where each file comes from
 
-`REPRODUCE.md` at the repository root maps each manuscript float to the
-script, configuration and command that generates it. The transfer runs come
-from `scripts/run_transfer.py`; the control experiments from the scripts
-named in that mapping.
+| File | Source |
+|---|---|
+| `per_seed.csv` | `scripts/run_transfer.py`, one run per row (`--arm scratch` / `--arm pretrained --ckpt ...` after `scripts/pretrain_twobody.py`) |
+| `transfer_encoder_headroom.csv` | aggregated from `per_seed.csv` (per-case means) |
+| `transfer_protocol_ablation.csv` | `scripts/run_transfer.py` with `--load {full,encoder}` and `--lr` varied |
+| `bondlength_leakage_control.csv` | `scripts/bondlength_dimenet.py` (`--mode leaked` / `leakage_free`) and `scripts/controls.py --experiment bondlength` (coordinate-free and mean-predictor rows), aggregated over seeds |
+| `spatial_shuffle_rawscalar_controls.csv` | `scripts/controls.py --experiment spatial` |
+| `label_readout_channel_ablation.csv` | `scripts/controls.py --experiment readout` |
+| `charge_target_verification.csv` | `scripts/charge_verification.py` |
+
+See the main [README](../README.md#running-the-benchmarks) for how to run the scripts.

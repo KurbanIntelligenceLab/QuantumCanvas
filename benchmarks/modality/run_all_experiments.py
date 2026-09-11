@@ -5,10 +5,6 @@ import json
 from datetime import datetime
 import subprocess
 
-_script_dir = Path(__file__).resolve().parent
-_project_root = _script_dir.parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
 
 def run_modality_comparison(args):
 
@@ -18,8 +14,8 @@ def run_modality_comparison(args):
 
     cmd = [
         sys.executable,
-        str(_script_dir / "train_modality_comparison.py"),
-        "--output_dir", "results_modality/modality_ablation",
+        "-m", "benchmarks.modality.train_modality_comparison",
+        "--output_dir", "outputs/modality/modality_ablation",
     ]
 
     if args.quick:
@@ -39,7 +35,7 @@ def run_modality_comparison(args):
         cmd.extend(["--device", args.device])
 
     print(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=str(_project_root))
+    result = subprocess.run(cmd)
     return result.returncode == 0
 
 def run_element_shuffle(args):
@@ -50,8 +46,8 @@ def run_element_shuffle(args):
 
     cmd = [
         sys.executable,
-        str(_script_dir / "element_shuffle_ablation.py"),
-        "--output_dir", "results_modality/element_shuffle_ablation",
+        "-m", "benchmarks.modality.element_shuffle_ablation",
+        "--output_dir", "outputs/modality/element_shuffle_ablation",
     ]
 
     if args.quick:
@@ -66,7 +62,7 @@ def run_element_shuffle(args):
         cmd.extend(["--device", args.device])
 
     print(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=str(_project_root))
+    result = subprocess.run(cmd)
     return result.returncode == 0
 
 def run_ood_composition(args):
@@ -77,8 +73,8 @@ def run_ood_composition(args):
 
     cmd = [
         sys.executable,
-        str(_script_dir / "ood_composition_split.py"),
-        "--output_dir", "results_modality/ood_composition",
+        "-m", "benchmarks.modality.ood_composition_split",
+        "--output_dir", "outputs/modality/ood_composition",
     ]
 
     if args.quick:
@@ -99,7 +95,7 @@ def run_ood_composition(args):
         cmd.extend(["--device", args.device])
 
     print(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=str(_project_root))
+    result = subprocess.run(cmd)
     return result.returncode == 0
 
 def generate_final_report(output_dir: Path):
@@ -165,7 +161,7 @@ def main():
     print(f"Quick mode: {args.quick}")
     print(f"Device: {args.device or 'auto'}")
 
-    output_dir = _project_root / "results_modality"
+    output_dir = Path("outputs/modality")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     config = {

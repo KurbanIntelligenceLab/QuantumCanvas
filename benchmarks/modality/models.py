@@ -1,4 +1,6 @@
 import torch
+
+from benchmarks.pairs import pair_view
 import torch.nn as nn
 
 class TabularMLPRegressor(nn.Module):
@@ -55,31 +57,13 @@ class TabularMLPRegressor(nn.Module):
     def forward(self, images, z, pos, batch):
 
         B = images.size(0)
-        device = images.device
 
         pooled = self.pool_images(images)
 
-        z1_embeds = []
-        z2_embeds = []
-        distances = []
-
-        for i in range(B):
-            mask = batch == i
-            z_mol = z[mask]
-            pos_mol = pos[mask]
-
-            z1_embeds.append(self.element_embedding(z_mol[0]))
-            z2_embeds.append(self.element_embedding(z_mol[1] if len(z_mol) > 1 else z_mol[0]))
-
-            if len(pos_mol) > 1:
-                dist = (pos_mol[0] - pos_mol[1]).norm()
-            else:
-                dist = torch.tensor(0.0, device=device)
-            distances.append(dist)
-
-        z1_embed = torch.stack(z1_embeds)
-        z2_embed = torch.stack(z2_embeds)
-        dist = torch.stack(distances).unsqueeze(-1)
+        zz, _, dist = pair_view(z, pos, batch, B)
+        z1_embed = self.element_embedding(zz[:, 0])
+        z2_embed = self.element_embedding(zz[:, 1])
+        dist = dist.unsqueeze(-1)
 
         features = torch.cat([pooled, z1_embed, z2_embed, dist], dim=-1)
 
@@ -128,7 +112,6 @@ class TabularTransformer(nn.Module):
 
     def forward(self, images, z, pos, batch):
         B = images.size(0)
-        device = images.device
 
         flat = images.view(B, self.num_channels, -1)
         channel_stats = torch.stack([
@@ -140,26 +123,11 @@ class TabularTransformer(nn.Module):
 
         channel_tokens = self.channel_proj(channel_stats)
 
-        atom_tokens = []
-        for i in range(B):
-            mask = batch == i
-            z_mol = z[mask]
-            pos_mol = pos[mask]
-
-            z1_emb = self.element_embedding(z_mol[0])
-            z2_emb = self.element_embedding(z_mol[1] if len(z_mol) > 1 else z_mol[0])
-
-            if len(pos_mol) > 1:
-                d1 = (pos_mol[0] - pos_mol[1]).norm().unsqueeze(0)
-                d2 = d1.clone()
-            else:
-                d1 = d2 = torch.zeros(1, device=device)
-
-            atom1 = torch.cat([z1_emb, d1])
-            atom2 = torch.cat([z2_emb, d2])
-            atom_tokens.append(torch.stack([atom1, atom2]))
-
-        atom_tokens = torch.stack(atom_tokens)
+        zz, _, dist = pair_view(z, pos, batch, B)
+        dist = dist.unsqueeze(-1)
+        atom1 = torch.cat([self.element_embedding(zz[:, 0]), dist], dim=-1)
+        atom2 = torch.cat([self.element_embedding(zz[:, 1]), dist], dim=-1)
+        atom_tokens = torch.stack([atom1, atom2], dim=1)
         atom_tokens = self.atom_proj(atom_tokens)
 
         cls_tokens = self.cls_token.expand(B, -1, -1)
@@ -245,32 +213,15 @@ class GeometryOnlyRegressor(nn.Module):
     def forward(self, images, z, pos, batch):
 
         B = batch.max().item() + 1
-        device = z.device
 
-        outputs = []
-        for i in range(B):
-            mask = batch == i
-            z_mol = z[mask]
-            pos_mol = pos[mask]
-
-            h1 = self.element_embedding(z_mol[0])
-            h2 = self.element_embedding(z_mol[1] if len(z_mol) > 1 else z_mol[0])
-
-            for layer in self.layers:
-                h1 = h1 + layer(h1)
-                h2 = h2 + layer(h2)
-
-            if len(pos_mol) > 1:
-                dist = (pos_mol[0] - pos_mol[1]).norm().unsqueeze(0)
-            else:
-                dist = torch.zeros(1, device=device)
-            dist_feat = self.dist_proj(dist)
-
-            combined = torch.cat([h1, h2, dist_feat])
-            outputs.append(combined)
-
-        outputs = torch.stack(outputs)
-        return self.head(outputs).squeeze(-1)
+        zz, _, dist = pair_view(z, pos, batch, B)
+        h1 = self.element_embedding(zz[:, 0])
+        h2 = self.element_embedding(zz[:, 1])
+        for layer in self.layers:
+            h1 = h1 + layer(h1)
+            h2 = h2 + layer(h2)
+        dist_feat = self.dist_proj(dist.unsqueeze(-1))
+        return self.head(torch.cat([h1, h2, dist_feat], dim=-1)).squeeze(-1)
 
 def get_modality_model(model_type: str, **kwargs):
 

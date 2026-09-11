@@ -49,49 +49,6 @@ class TargetLabels:
     N_LEVELS = 'n_levels'
     NO_VIRTUAL_IN_BASIS = 'no_virtual_in_basis'
 
-    @classmethod
-    def get_all(cls) -> List[str]:
-
-        return [v for k, v in cls.__dict__.items()
-                if not k.startswith('_') and isinstance(v, str) and not callable(v)]
-
-    @classmethod
-    def get_energy_targets(cls) -> List[str]:
-
-        return [cls.BAND_ENERGY, cls.REPULSIVE_ENERGY, cls.TOTAL_ENERGY,
-                cls.MERMIN_FREE_ENERGY, cls.FERMI_LEVEL]
-
-    @classmethod
-    def get_electronic_targets(cls) -> List[str]:
-
-        return [cls.E_HOMO, cls.E_LUMO, cls.E_GAP, cls.MAX_OCCUPANCY, cls.METAL_LIKE]
-
-    @classmethod
-    def get_reactivity_targets(cls) -> List[str]:
-
-        return [cls.IONIZATION_POTENTIAL, cls.ELECTRON_AFFINITY, cls.ELECTRONEGATIVITY,
-                cls.CHEMICAL_POTENTIAL, cls.HARDNESS, cls.SOFTNESS, cls.ELECTROPHILICITY]
-
-    @classmethod
-    def get_dipole_targets(cls) -> List[str]:
-
-        return [cls.DIPOLE_X, cls.DIPOLE_Y, cls.DIPOLE_Z, cls.DIPOLE_MAG]
-
-    @classmethod
-    def get_charge_targets(cls) -> List[str]:
-
-        return [cls.TOTAL_CHARGE, cls.Q_ABSMEAN, cls.Q_MAXABS, cls.Q_STD]
-
-    @classmethod
-    def get_geometric_targets(cls) -> List[str]:
-
-        return [cls.DISTANCE, cls.N_ATOMS]
-
-    @classmethod
-    def get_recommended_targets(cls) -> List[str]:
-
-        return [cls.E_GAP, cls.TOTAL_ENERGY, cls.DIPOLE_MAG]
-
 @dataclass
 class ExperimentConfig:
 
@@ -136,7 +93,7 @@ class DataConfig:
     dataset_path: str = 'dataset_combined.npz'
     train_split: float = 0.8
     val_split: float = 0.1
-    num_workers: int = 4
+    num_workers: int = 0  # data is in memory; worker processes only add overhead (and break Windows spawn)
 
     @property
     def test_split(self) -> float:
@@ -230,17 +187,10 @@ class ModelConfigs:
             'n_rbf': 10
         }
 
-        self.egnn = {
+        self.gcn = {
             'n_layers': 7,
-            'feats_dim': 1,
-            'pos_dim': 3,
-            'm_dim': 180,
-            'update_coors': True,
-            'update_feats': True,
-            'norm_feats': True,
-            'norm_coors': False,
-            'dropout': 0.0,
-            'coor_weights_clamp_value': 2.0
+            'hidden_channels': 180,
+            'dropout': 0.1,
         }
 
         self.gatv2 = {
@@ -295,7 +245,7 @@ class ModelConfigs:
             'schnet': self.schnet,
             'faenet': self.faenet,
             'gotennet': self.gotennet,
-            'egnn': self.egnn,
+            'gcn': self.gcn,
             'gatv2': self.gatv2,
             'dimenet': self.dimenet,
             'vit': self.vit,
@@ -306,7 +256,7 @@ class ModelConfigs:
     @property
     def available_models(self) -> List[str]:
 
-        return ['schnet', 'faenet', 'gotennet', 'egnn', 'gatv2', 'dimenet',
+        return ['schnet', 'faenet', 'gotennet', 'gcn', 'gatv2', 'dimenet',
                 'vit', 'quantumshellnet', 'multimodal']
 
 @dataclass
@@ -458,13 +408,13 @@ class BenchmarkConfig:
         print("BENCHMARK CONFIGURATION SUMMARY")
         print("=" * 70)
 
-        print("\n🎯 Experiment Design:")
+        print("\nExperiment Design:")
         print(f"  Targets: {len(self.experiment.targets)} ({', '.join(self.experiment.targets)})")
         print(f"  Seeds: {len(self.experiment.seeds)} ({', '.join(map(str, self.experiment.seeds))})")
         print(f"  Total experiments: {self.experiment.total_experiments}")
         print(f"  Available models: {len(self.models.available_models)}")
 
-        print("\n⚙️  Training Settings:")
+        print("\nTraining Settings:")
         print(f"  Batch size: {self.training.batch_size}")
         print(f"  Epochs: {self.training.epochs}")
         print(f"  Learning rate: {self.training.lr}")
@@ -475,12 +425,12 @@ class BenchmarkConfig:
         print(f"  Loss: {self.loss_function}")
         print(f"  Device: {self.device}")
 
-        print("\n📊 Data Configuration:")
+        print("\nData Configuration:")
         print(f"  Dataset: {self.data.dataset_path}")
         print(f"  Train/Val/Test split: {self.data.train_split}/{self.data.val_split}/{self.data.test_split:.2f}")
         print(f"  Num workers: {self.data.num_workers}")
 
-        print("\n🤖 Models:")
+        print("\nModels:")
         for model_name in self.models.available_models:
             print(f"  - {model_name}")
         print("=" * 70)

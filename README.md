@@ -1,500 +1,211 @@
 # QuantumCanvas: A Multimodal Benchmark for Learning Two-Body Quantum Interactions
 
----
+Can Polat (1), Mustafa Kurban (2, 3), Erchin Serpedin (1), Hasan Kurban (4)
 
-## **Abstract**
+1. Department of Electrical and Computer Engineering, Texas A&M University, College Station, Texas, USA
+2. Department of Electrical and Computer Engineering, Texas A&M University at Qatar, Doha, Qatar
+3. Department of Prosthetics and Orthotics, Ankara University, Ankara, Turkey
+4. College of Science and Engineering, Hamad Bin Khalifa University, Doha, Qatar
 
-Despite rapid advances in molecular and materials machine learning, most models lack physical transferability: they fit correlations across whole molecules or crystals rather than learning the quantum interactions between atomic pairs. Yet bonding, charge redistribution, orbital hybridization, and electronic coupling all emerge from these two-body interactions that define local quantum fields in many-body systems.
+Published in Machine Learning: Science and Technology (2026), [doi:10.1088/2632-2153/aea5d6](https://doi.org/10.1088/2632-2153/aea5d6).
+Dataset: [doi:10.5281/zenodo.20631934](https://doi.org/10.5281/zenodo.20631934).
 
-We introduce **QuantumCanvas**, a large-scale multimodal benchmark that treats two-body quantum systems as a minimal, systematically enumerable unit of interatomic interaction. The dataset spans **2,850 element–element pairs**, each annotated with **20 electronic, thermodynamic, and geometric properties** and paired with **ten-channel image representations** that render orbital shell populations, angular-momentum moments, and charge- and dipole-derived fields. These images encode spatial, angular, and electrostatic structure without explicit coordinates, providing an image-based modality that complements coordinate-based representations.
+## Abstract
 
-Benchmarking eight architectures across 20 targets, we report MAEs of **0.201 eV** on energy gap with GATv2, **0.265 eV** on HOMO and **0.274 eV** on LUMO with the GCN, and **0.008 Å** on bond length with DimeNet++. For energy-related quantities, DimeNet++ attains **2.27 eV** total-energy MAE and **0.132 eV** repulsive-energy MAE, while a multimodal fusion model achieves a **2.15 eV** Mermin free-energy MAE. Parameter-matched ablations quantify what the image modality contributes: a compact orbital-image network attains a **45% lower** energy-gap MAE than a tabular baseline receiving the same pooled information, and an image-only model recovers dipole moments to **0.129 D** from the rendered fields. Pretraining on **QuantumCanvas** further improves convergence stability and generalization when fine-tuned on **QM9**, **MD17**, and **CrysMTM**.
+Most molecular and materials machine-learning models fit correlations across whole molecules or crystals rather than learning the quantum interactions between atomic pairs. Yet bonding, charge redistribution, orbital hybridization, and electronic coupling all emerge from these two-body interactions. We introduce *QuantumCanvas*, a multimodal benchmark that treats the two-body quantum system as the minimal, exhaustively enumerable unit of interatomic interaction. It covers 2,850 element-element pairs, each at a single optimized geometry, and evaluates 17 benchmark target quantities spanning electronic, thermodynamic, dipole, and charge-derived properties; algebraically derived quantities and redundant diagnostic charge rows are identified explicitly, and label availability is reported per target. Each pair is also represented by ten-channel images of orbital populations and charge- and dipole-derived fields that encode angular and electrostatic structure without explicit atomic coordinates. Benchmarking graph, vision, and fusion architectures on element-pair-disjoint splits reveals modality-specific inductive biases: graph encoders achieve the lowest MAE on most reported targets, while late fusion gives the lowest MAE for the reported Mermin free-energy label. Controls on the energy gap and dipole magnitude show that destroying the spatial layout of the images does not degrade accuracy and that a model fed the generating scalars directly outperforms both image variants: the rendering is an alternative encoding of the same scalars, not an independent signal. Pretraining on *QuantumCanvas* lowers mean test error in 11 of 16 encoder-target comparisons across *QM9*, *MD17*, and *CrysMTM*. *QuantumCanvas* thus provides a controlled, physically grounded testbed for studying which signals each modality captures, how they combine, and how they transfer across molecular, dynamical, and crystalline regimes.
 
-By coupling orbital physics with image- and graph-based learning, **QuantumCanvas** provides a controlled, physically grounded testbed for studying which signals each modality captures, how the modalities combine, and how they transfer across molecular, dynamical, and crystalline regimes.
+**Keywords:** machine learning for interatomic interactions, two-body quantum systems, multimodal benchmark, orbital-image representations, molecular property prediction
 
----
+## Installation
 
-## 🔁 Reproducing manuscript results
+Requires Python 3.11 or 3.12 and [uv](https://docs.astral.sh/uv/). Linux, macOS and Windows are supported.
 
-See [REPRODUCE.md](REPRODUCE.md) for the exact command, config, and output
-path behind every table and figure in the manuscript, plus the environment
-pins needed for the DimeNet++ results.
+```bash
+git clone https://github.com/KurbanIntelligenceLab/QuantumCanvas.git
+cd QuantumCanvas
+uv sync                      # data loaders only
+uv sync --extra benchmarks   # + everything the benchmark scripts need
+```
 
-## 📌 Dataset DOI & Citation
+`uv sync` installs the exact versions in `uv.lock`, including `torch==2.8.0` and `torch-geometric==2.5.3`. The `benchmarks` extra adds the PyG extensions (`torch-scatter`, `torch-sparse`, `torch-cluster`, `torch-spline-conv`), FAENet and GotenNet. The extensions come as prebuilt wheels on Linux (CUDA 12.8) and Windows (CPU); on macOS they are compiled from source during the first sync (a few minutes). `numpy` is pinned below 2.0 because DimeNet++ in `torch-geometric` 2.5.3 still uses `np.math`.
 
-The dataset is permanently archived on Zenodo (**CC-BY-4.0**); the code is released under the **MIT License**.
+## Dataset
 
-**DOI:** [10.5281/zenodo.20631934](https://doi.org/10.5281/zenodo.20631934)
+The dataset is archived on Zenodo (33.5 MB, CC-BY-4.0). Download it with the md5 check:
 
-To cite the paper rather than the dataset, see [Citation](#-citation).
+```bash
+uv run python -c "import quantumcanvas; quantumcanvas.download()"   # writes ./dataset_combined.npz
+```
+
+or manually:
+
+```bash
+curl -L -o dataset_combined.npz "https://zenodo.org/records/20631934/files/dataset_combined.npz?download=1"
+md5sum dataset_combined.npz   # a35d349814ca9e12a8413289c015de49  (macOS: md5)
+```
+
+Every script looks for `dataset_combined.npz` in the working directory by default; pass `--dataset_path` to point elsewhere.
+
+Images (PyTorch):
+
+```python
+from torch.utils.data import DataLoader
+from quantumcanvas import TwoBodyDataset
+
+ds = TwoBodyDataset("dataset_combined.npz", target_label="e_g_ev")
+for images, targets in DataLoader(ds, batch_size=32, shuffle=True):
+    ...  # images: [32, 10, 32, 32], targets: [32]
+```
+
+Graphs (PyTorch Geometric):
+
+```python
+from torch_geometric.loader import DataLoader
+from quantumcanvas import TwoBodyGraphDataset, batch_images
+
+ds = TwoBodyGraphDataset("dataset_combined.npz", target_label="e_g_ev")
+for batch in DataLoader(ds, batch_size=32, shuffle=True):
+    out = model(batch.z, batch.pos, batch.batch)   # 2 atoms per graph
+    images = batch_images(batch)                   # [32, 10, 32, 32]
+```
+
+`TwoBodyGraphDataset` scales `y` to [-1, 1] (`ds.denormalize_label(...)` maps predictions back; `ds.fit_normalization(train_indices)` refits the scaling on a training split; pass `normalize_labels=False` for raw units). Both datasets skip pairs whose target is missing. For the raw arrays, use `quantumcanvas.load_npz(path)`.
+
+## Data format
+
+`dataset_combined.npz` holds 2,850 element pairs:
+
+| Key | Shape | Contents |
+|---|---|---|
+| `images` | `[2850, 10, 32, 32]` float32 | ten image channels (below) |
+| `geometries` | `[2850, 2, 4]` float32 | per atom: x, y, z (Angstrom) and electron population |
+| `elements` | `[2850, 2]` | element symbols, e.g. `['Be', 'Rn']` |
+| `pair_names` | `[2850]` | e.g. `'Be_Rn'` |
+| `labels` | `[2850]` dict | 37 DFTB+ labels per pair (keys below) |
+| `metadata` | `[2850]` dict | bond length, Fermi level, total energy, dipole vector |
+
+Image channels (`quantumcanvas.CHANNELS`):
+
+| Ch | Channel | Rendering |
+|---|---|---|
+| 0 | Orbital population | orbital-weighted population stamp per atom |
+| 1 | Angular moment | net magnetic-moment magnitude per atom |
+| 2 | s/p shell field | isotropic radial field times total s+p population |
+| 3 | d/f shell field | four-fold radial field times total d+f population |
+| 4 | Dipole field | radial ring times dipole magnitude |
+| 5 | Charge-asymmetry field | quadrupole field times the charge difference of the two atoms |
+| 6 | Charge magnitude | stamp per atom times absolute charge |
+| 7 | Electron population | stamp per atom times total electron population |
+| 8 | Positive charge | stamp at the positively charged atom |
+| 9 | Negative charge | stamp at the negatively charged atom |
+
+Benchmark targets (`quantumcanvas.BENCHMARK_TARGETS`), with the number of pairs that have the label:
+
+| Group | Label keys | Unit | Pairs |
+|---|---|---|---|
+| Electronic | `e_g_ev`, `e_homo_ev`, `e_lumo_ev` | eV | 2,840 |
+| | `band_energy_ev` | eV | 2,850 |
+| Energy | `total_energy_ev`, `repulsive_energy_ev`, `mermin_free_energy_ev` | eV | 2,850 |
+| Conceptual DFT | `i_ev`, `a_ev`, `chi_ev`, `mu_ev`, `eta_ev` | eV | 2,840 |
+| | `softness_evinv` | 1/eV | 987 |
+| | `electrophilicity_ev` | eV | 987 |
+| Dipole | `dipole_mag_d`, `dipole_z_d` | D | 2,850 |
+| Charge | `q_maxabs`, `q_absmean`, `q_std` | e | 2,850 |
+
+Every pair is neutral (q_B = -q_A), so the three charge statistics all equal the absolute atomic charge and the 19 keys amount to 17 distinct quantities. Electronegativity, chemical potential, hardness, softness and electrophilicity are algebraic functions of the ionization potential I and electron affinity A: chi = (I + A) / 2, eta = (I - A) / 2, S = 1 / eta, mu = -chi, omega = mu^2 / (2 eta). The other label keys (`distance_ang`, `fermi_level_ev`, `metal_like`, `dipole_x_d`, `dipole_y_d`, `total_charge`, SCC and geometry-convergence diagnostics) are included for analysis.
+
+## Running the benchmarks
+
+Run from the repository root after `uv sync --extra benchmarks`. Every script takes `--help`. Outputs go to `outputs/<experiment>/`.
+
+```bash
+# Graph, vision and fusion models on every benchmark target (3 seeds each)
+uv run python -m benchmarks.train_models_twobody
+uv run python -m benchmarks.train_models_twobody --models schnet gcn --targets e_g_ev --seeds 42
+
+# Parameter-matched modality comparison (tabular vs. vision vs. geometry vs. fusion)
+uv run python -m benchmarks.modality.train_modality_comparison
+
+# Ablations on the trained modality checkpoints, and out-of-distribution splits
+uv run python -m benchmarks.modality.element_shuffle_ablation          # element-identity shuffling
+uv run python -m benchmarks.modality.channel_perm_from_modality_ckpts  # channel-permutation importance
+uv run python -m benchmarks.modality.ood_composition_split             # composition / periodic-table splits
+uv run python -m benchmarks.modality.run_all_experiments               # comparison, shuffling and OOD in sequence
+
+# Transfer learning: pretrain on a two-body target, then fine-tune from scratch vs. pretrained
+uv run python scripts/pretrain_twobody.py --model schnet --target e_g_ev --seed 42
+uv run python scripts/run_transfer.py --case qm9:gap --model schnet --seed 42 --arm scratch --lr 1e-4
+uv run python scripts/run_transfer.py --case qm9:gap --model schnet --seed 42 --arm pretrained --lr 1e-4 \
+    --ckpt outputs/pretrain/e_g_ev/schnet/seed_42/best_model.pt
+
+# Controls: spatial shuffle vs. raw scalars, channel readout, bond-length leakage, charge redundancy
+uv run python scripts/controls.py --experiment spatial      # also: readout, bondlength
+uv run python scripts/bondlength_dimenet.py --model dimenet --mode leakage_free --seed 42
+uv run python scripts/charge_verification.py
+```
+
+Transfer cases are `qm9:{gap,homo,lumo}`, `md17:{aspirin,benzene,ethanol}` and `crysmtm:{HOMO,LUMO}`. `TWOBODY_TARGET_MAP` in each `benchmarks/*_config.py` names the two-body target to pretrain on for each case (for example `e_g_ev` for `qm9:gap`, `total_energy_ev` for MD17). The paper used `--lr 1e-4` on both arms. QM9 and MD17 download into `data/` through PyTorch Geometric; CrysMTM must be placed in `data/CrysMTM` manually. Hyperparameters live in `benchmarks/benchmark_config.py` (two-body benchmark) and `benchmarks/{qm9,md17,crysmtm}_config.py` (transfer).
+
+## Differences from the paper
+
+The code was cleaned up after publication. The following fixes change numbers, so rerunning will not reproduce the published tables exactly:
+
+- Modality comparison and OOD splits: the "best" checkpoint was a shallow copy of the model weights, so the last epoch was evaluated. The best validation epoch is now restored.
+- Label scaling ([-1, 1] min-max) was fitted on the whole dataset; it is now fitted on the training split (two-body benchmark, modality comparison, OOD splits, pretraining).
+- Element-shuffle and channel-permutation ablations evaluated on all pairs, most of them training data; they now use the held-out test split of each checkpoint.
+- CrysMTM transfer: rotations of the same (phase, temperature) structure were split across train and test, and atoms were encoded as 0/1 instead of their atomic numbers. The split is now grouped by structure and atoms use Z (Ti = 22, O = 8).
+- OOD bond-distance split: read the bond length of the wrong pair when the target had missing labels.
+
+The GCN model was called `egnn` in earlier versions; `egnn` still works as an alias.
+
+## Results
+
+[`results/`](results/) holds the per-run CSVs behind the transfer, control and verification experiments reported in the paper. [`results/README.md`](results/README.md) documents each file and its columns.
+
+## Repository layout
+
+```
+quantumcanvas/   installable package: data loaders, constants, Zenodo download, dataset builder
+benchmarks/      benchmark models and training (train_models_twobody.py, benchmark_config.py)
+  modality/      modality/fusion models, comparison and ablations
+  crysmtm/       CrysMTM loader for the transfer experiments
+scripts/         pretraining, transfer runs, control experiments
+results/         per-run CSVs cited in the paper
+tests/           smoke tests on synthetic data (uv run pytest)
+build_dataset.py rebuild dataset_combined.npz from raw DFTB+ outputs
+```
+
+Rebuilding the dataset requires the raw per-pair DFTB+ outputs (`<raw_data_dir>/<pair>/{detailed.out,geo_end.xyz}` plus `dftb_ptbp_combined.csv` and `bond_distances_all.csv`), which are not part of the Zenodo archive: `uv run python build_dataset.py <raw_data_dir> dataset_combined.npz`.
+
+## Citation
+
+If you use QuantumCanvas, please cite the paper:
+
+```bibtex
+@article{polat2026quantumcanvas,
+  author  = {Polat, Can and Kurban, Mustafa and Serpedin, Erchin and Kurban, Hasan},
+  title   = {QuantumCanvas: a multimodal benchmark for learning two-body quantum interactions},
+  journal = {Machine Learning: Science and Technology},
+  year    = {2026},
+  doi     = {10.1088/2632-2153/aea5d6},
+  url     = {http://iopscience.iop.org/article/10.1088/2632-2153/aea5d6}
+}
+```
+
+and, for the dataset itself:
 
 ```bibtex
 @misc{polat2026quantumcanvas_dataset,
-  title        = {QuantumCanvas: A Multimodal Benchmark for Learning Two-Body Quantum Interactions},
-  author       = {Polat, Can and Serpedin, Erchin and Kurban, Mustafa and Kurban, Hasan},
-  year         = {2026},
-  publisher    = {Zenodo},
-  doi          = {10.5281/zenodo.20631934},
-  url          = {https://doi.org/10.5281/zenodo.20631934}
+  author    = {Polat, Can and Kurban, Mustafa and Serpedin, Erchin and Kurban, Hasan},
+  title     = {QuantumCanvas: A Multimodal Benchmark for Learning Two-Body Quantum Interactions},
+  year      = {2026},
+  publisher = {Zenodo},
+  version   = {1.0.0},
+  doi       = {10.5281/zenodo.20631934},
+  url       = {https://doi.org/10.5281/zenodo.20631934}
 }
 ```
 
----
+## License
 
-## 🚀 Quick Start
-
-### 1. Install
-
-Dependencies are declared in `pyproject.toml` and managed with
-[uv](https://docs.astral.sh/uv/):
-
-```bash
-uv sync
-```
-
-This creates `.venv` from `uv.lock`. Prefix commands with `uv run` to use it,
-for example `uv run python build_dataset.py`.
-
-The PyTorch Geometric C-extensions and the optional encoder backends are
-extras that need a wheel index; see the Environment section of
-[REPRODUCE.md](REPRODUCE.md) for those commands and for two known
-dependency pitfalls (`numpy<2.0` is required, and `torch-sparse` must come
-from the wheel index rather than a source build).
-
-### 2. Get the Dataset
-
-The dataset is not stored in this repository. Download the archived copy
-from Zenodo (33.5 MB):
-
-```bash
-curl -L -o dataset_combined.npz \
-  https://zenodo.org/records/20631934/files/dataset_combined.npz?download=1
-```
-
-Verify the download before using it:
-
-```bash
-md5sum dataset_combined.npz
-# a35d349814ca9e12a8413289c015de49
-```
-
-On macOS use `md5 dataset_combined.npz` instead. Every script in this
-repository expects the file at the repository root under this name.
-
-**Rebuilding from source instead of downloading** requires the raw
-per-pair DFTB+ outputs, which are not part of the Zenodo archive:
-
-```bash
-uv run python build_dataset.py /path/to/raw_data dataset_combined.npz
-```
-
-### 3. Load and Use
-
-**PyTorch (for CNNs/ViTs):**
-```python
-from pytorch_dataset import TwoBodyDataset
-from torch.utils.data import DataLoader
-
-dataset = TwoBodyDataset('dataset_combined.npz', target_label='e_g_ev')
-loader = DataLoader(dataset, batch_size=32, shuffle=True)
-
-for images, targets in loader:
-    outputs = model(images)  # images: [32, 10, 32, 32]
-```
-
-**PyTorch Geometric (for GNNs):**
-```python
-from pytorch_geometric_dataset import TwoBodyGraphDataset
-from torch_geometric.loader import DataLoader
-
-dataset = TwoBodyGraphDataset('dataset_combined.npz', target_labels=['e_g_ev'])
-loader = DataLoader(dataset, batch_size=32, shuffle=True)
-
-for batch in loader:
-    outputs = gnn_model(batch.x, batch.edge_index, batch.edge_attr)
-```
-
----
-
-## 📦 What `build_dataset.py` Creates
-
-### Output
-
-```
-dataset_combined.npz   → Single file with all 2850 samples (33.5 MB, from Zenodo)
-├── images:       [2850, 10, 32, 32] - All image tensors
-├── geometries:   [2850, 2, 4] - All 3D coordinates
-├── elements:     list of 2850 element pairs
-├── labels:       list of 2850 label dicts
-├── metadata:     list of 2850 metadata dicts
-└── pair_names:   list of 2850 system names
-
-analysis/
-├── all_labels.csv                 → All 37 labels in CSV format
-├── geometry_data.csv              → 3D coordinates for all systems
-└── labels_detailed_summary.txt    → Complete label statistics
-```
-
-### Access Individual Samples
-
-```python
-import numpy as np
-
-# Load entire dataset
-data = np.load('dataset_combined.npz', allow_pickle=True)
-
-# Access sample 0
-image = data['images'][0]          # [10, 32, 32]
-geometry = data['geometries'][0]   # [2, 4]
-elements = data['elements'][0]     # ['Ag', 'Al']
-labels = data['labels'][0]         # {dict} 37 labels
-pair_name = data['pair_names'][0]  # 'Ag_Al'
-
-band_gap = labels['e_g_ev']
-```
-
----
-
-## 📊 Image Channels (10 total)
-
-| Ch | Name | Description |
-|----|------|-------------|
-| 0 | Orbital-population map | Orbital-weighted population stamp per atom |
-| 1 | Angular-moment map | Net magnetic-moment magnitude per atom |
-| 2 | s/p shell field | Isotropic radial field × total s+p population |
-| 3 | d/f shell field | Four-fold radial field × total d+f population |
-| 4 | Dipole field | Radial ring × dipole magnitude ‖μ‖ |
-| 5 | Charge-asymmetry field | Quadrupole field × \|q_A − q_B\| |
-| 6 | Charge-magnitude map | Stamp per atom × \|q\| |
-| 7 | Electron-population map | Stamp per atom × total electron population |
-| 8 | Positive-charge map | Stamp at atoms with q > 0 |
-| 9 | Negative-charge map | Stamp at atoms with q < 0 |
-
----
-
-## 🏷️ Labels (37 total)
-
-**Energy (8 float)**
-- `total_energy_ev`, `e_homo_ev`, `e_lumo_ev`, `e_g_ev` (band gap)
-- `band_energy_ev`, `mermin_free_energy_ev`, `repulsive_energy_ev`, `fermi_level_ev`
-
-**Charge (4 float)**
-- `q_absmean`, `q_maxabs`, `q_std`, `total_charge`
-
-**Electronic (10 mixed)**
-- `i_ev`, `a_ev`, `chi_ev`, `mu_ev`, `eta_ev` (float)
-- `n_levels`, `max_occupancy` (float)
-- `softness_evinv`, `electrophilicity_ev` (float)
-- `metal_like` (bool: 0/1) 🔵
-- `no_virtual_in_basis` (bool: 0/1) 🔵
-
-**Dipole (4 float)**
-- `dipole_mag_d`, `dipole_x_d`, `dipole_y_d`, `dipole_z_d`
-
-**Geometric (1 float)**
-- `distance_ang` (bond length)
-
-**Convergence (7 mixed)**
-- `geom_opt_step`, `scc_last_iter` (float)
-- `scc_last_total_elec_eh`, `scc_last_diff_elec`, `scc_last_error` (float)
-- `geom_converged`, `scc_converged` (bool: 0/1) 🔵
-
-**System (3 mixed)**
-- `n_atoms` (float)
-- `system_id_guess` (string)
-
-**Note:** 
-- 🔵 = Boolean labels (0/1 values for classification)
-- 3D coordinates in `data['geometry']` array, element symbols in `data['elements']`
-
----
-
-## 💻 Usage Examples
-
-### Simple Regression
-
-```python
-from torch.utils.data import Dataset, DataLoader
-import torch
-import numpy as np
-
-class SimpleDataset(Dataset):
-    def __init__(self, data_dir, target='e_g_ev'):
-        self.files = sorted(Path(data_dir).glob('*.npz'))
-        self.target = target
-    
-    def __getitem__(self, idx):
-        data = np.load(self.files[idx], allow_pickle=True)
-        image = torch.from_numpy(data['image']).float()
-        target = data['labels'].item()[self.target]
-        return image, torch.tensor(target if target else 0.0)
-    
-    def __len__(self):
-        return len(self.files)
-
-# Train on band gap prediction
-dataset = SimpleDataset('processed_images', target='e_g_ev')
-loader = DataLoader(dataset, batch_size=32, shuffle=True)
-```
-
-### With Geometry Features
-
-```python
-class HybridDataset(Dataset):
-    def __getitem__(self, idx):
-        data = np.load(self.files[idx], allow_pickle=True)
-        
-        # Image
-        image = torch.from_numpy(data['image']).float()
-        
-        # Geometric features
-        geom = data['geometry']
-        bond_length = data['metadata'].item()['bond_length']
-        
-        geom_features = torch.tensor([
-            bond_length,
-            geom[0, 3] / geom[1, 3],  # population ratio
-        ])
-        
-        # Target
-        target = data['labels'].item()[self.target]
-        
-        return {'image': image, 'geom': geom_features}, target
-```
-
-### Using CSV Files
-
-```python
-import pandas as pd
-
-# Load labels
-df = pd.read_csv('analysis/prediction_labels.csv')
-
-# Load geometry
-df_geom = pd.read_csv('analysis/geometry_data.csv')
-
-# Merge
-df_full = df.merge(df_geom, on='pair_name')
-
-# Analyze
-print(df_full[['pair_name', 'e_g_ev', 'bond_length_ang']].head())
-```
-
----
-
-## 🎯 Common Prediction Tasks
-
-### 1. Band Gap Regression
-```python
-target = 'e_g_ev'  # Range: [0, 19.4] eV
-# Use: Semiconductor applications
-```
-
-### 2. Metal Classification
-```python
-target = 'metal_like'  # Binary: 0 or 1
-# Distribution: 74% metal, 26% non-metal
-```
-
-### 3. Total Energy Prediction
-```python
-target = 'total_energy_ev'  # Range: [-305.6, -2.3] eV
-# Use: Thermodynamic stability
-```
-
-### 4. Multi-Target Learning
-```python
-targets = ['e_g_ev', 'total_energy_ev', 'dipole_mag_d', 'metal_like']
-# Predict multiple properties at once
-```
-
----
-
-## 📈 Dataset Statistics
-
-| Property | Count | Mean | Std | Range |
-|----------|-------|------|-----|-------|
-| Samples | 2850 | - | - | - |
-| Band Gap (eV) | 2850 | 0.47 | 1.19 | [0.0, 19.4] |
-| Total Energy (eV) | 2850 | -90.5 | 48.1 | [-305.6, -2.3] |
-| Bond Length (Å) | 2850 | 2.58 | 0.66 | [0.7, 5.6] |
-| Metal Systems | 2850 | 74% | - | - |
-
----
-
-## 🔧 Rebuild/Regenerate
-
-### Default (current directory)
-```bash
-python build_dataset.py
-```
-
-### Custom paths
-```bash
-python build_dataset.py /path/to/raw_data /path/to/output_dir
-```
-
-### What it does:
-1. ✅ Parses `detailed.out` → orbital populations
-2. ✅ Parses `geo_end.xyz` → 3D coordinates  
-3. ✅ Creates 10-channel images → `[10, 32, 32]` tensors
-4. ✅ Integrates CSV labels → 37 quantum properties
-5. ✅ Saves to `dataset_combined.npz` → single file (33.5 MB)
-6. ✅ Creates `analysis/` folder → CSVs & summaries
-
-**Processing time:** ~2 minutes for 2850 samples  
-**Output:** One file with everything, easy to distribute!
-
----
-
-## 📁 File Structure
-
-```
-.
-├── README.md                  ← YOU ARE HERE
-├── build_dataset.py           ← Build everything
-├── pytorch_dataset.py         ← PyTorch loader
-├── pytorch_geometric_dataset.py ← PyTorch Geometric loader
-├── check_npz.py               ← Inspect data
-│
-├── dataset_combined.npz       ← Main dataset (33.5 MB, 2850 samples, download from Zenodo) ⭐
-│
-├── raw_data/                  ← Your input data
-│   ├── Ag_Al/detailed.out + geo_end.xyz
-│   ├── dftb_ptbp_combined.csv
-│   └── bond_distances_all.csv
-│
-└── analysis/                  ← Analysis files
-    ├── all_labels.csv
-    ├── geometry_data.csv
-    └── labels_detailed_summary.txt
-```
-
----
-
-## 🎓 Citation
-
-If you use *QuantumCanvas*, please cite the paper:
-
-```bibtex
-@article{polat2025quantumcanvas,
-  title={QuantumCanvas: A Multimodal Benchmark for Visual Learning of Atomic Interactions},
-  author={Polat, Can and Serpedin, Erchin and Kurban, Mustafa and Kurban, Hasan},
-  journal={arXiv preprint arXiv:2512.01519},
-  year={2025}
-}
-```
-
-To cite the archived dataset itself, use the Zenodo entry under
-[Dataset DOI & Citation](#-dataset-doi--citation).
-
----
-
-## ✅ Validation
-
-- ✅ All 2850 samples processed successfully
-- ✅ All labels integrated and verified
-- ✅ Bond lengths validated (CSV vs XYZ match)
-- ✅ No missing critical data
-- ✅ Ready for training
-
----
-
-## 📖 Label Details
-
-### Energy Labels
-- **`e_g_ev`**: HOMO-LUMO gap (band gap) - KEY TARGET
-- **`total_energy_ev`**: Total system energy - KEY TARGET
-- **`e_homo_ev`**: Highest occupied molecular orbital
-- **`e_lumo_ev`**: Lowest unoccupied molecular orbital
-
-### Boolean/Classification Labels
-- **`metal_like`** 🔵: Binary metal/non-metal (0=non-metal, 1=metal)
-- **`geom_converged`** 🔵: Geometry convergence flag (always 1)
-- **`scc_converged`** 🔵: SCC convergence flag (always 1)
-- **`no_virtual_in_basis`** 🔵: Virtual orbitals flag
-
-### Regression Targets
-All numeric labels can be used as regression targets. See `analysis/all_labels.csv` for the complete list.
-
----
-
-## 🔍 Verify Data Quality
-
-Check the comprehensive summary to verify all labels:
-
-```bash
-cat analysis/labels_detailed_summary.txt
-```
-
-This file shows:
-- ✅ Coverage for all 48 labels
-- ✅ Mean, std, min, max, median for each numeric label
-- ✅ Distribution for categorical labels
-- ✅ Notes on empty labels
-
-**All labels are lowercase with underscores** (e.g., `e_g_ev`, `total_energy_ev`, `distance_ang`)
-
-**Note:** Geometry coordinates (x, y, z) are in `data['geometry']` array, NOT in labels.
-
----
-
-## 🔗 PyTorch Geometric Compatibility
-
-**Yes! Your dataset is fully compatible with PyTorch Geometric!**
-
-Each two-body system is a graph with:
-- **2 nodes** (atoms)
-- **1 edge** (chemical bond)
-- **Node features**: Element one-hot + electron population
-- **Edge features**: Pooled image channels (10D) + bond vector (4D) = 14D
-- **3D positions**: Atomic coordinates
-- **Target**: Any of the 37 labels
-
-### Why Use PyG?
-
-✅ **Compare image vs graph approaches** for the same data  
-✅ **Hybrid models**: GNN + image features  
-✅ **Use 3D geometry** with SchNet, DimeNet, GemNet  
-✅ **Message passing** between atoms  
-✅ **Benchmark GNNs** against CNNs/ViTs  
-
-### Graph Structure
-
-```
-Two-Body System (e.g., Ag-Al):
-  Node 0 (Ag): [one-hot Ag, population=11.07]
-  Node 1 (Al): [one-hot Al, population=2.93]
-  Edge 0→1: [10 image channels (pooled), bond_length, bond_vector]
-```
-
-See `pytorch_geometric_dataset.py` for full implementation!
-
----
-
-## 📤 Releasing as a Dataset
-
-**Recommended release package:**
-
-```
-TwoBody-CVPR2026/
-├── dataset_combined.npz           (33.5 MB, download from Zenodo) ⭐
-├── pytorch_dataset.py
-├── pytorch_geometric_dataset.py
-├── README.md
-├── LICENSE
-└── analysis/
-    ├── all_labels.csv
-    ├── geometry_data.csv
-    └── labels_detailed_summary.txt
-```
-
-**Total size:** ~35 MB
-
-**Upload to:** Zenodo (get DOI), Hugging Face, or GitHub Release
-
-**See `RELEASE_GUIDE.md` for detailed recommendations.**
-
----
-
-**Questions? Check `analysis/labels_detailed_summary.txt` for complete label statistics.**
+Code: [MIT](LICENSE). Dataset: [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/).

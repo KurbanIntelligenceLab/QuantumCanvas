@@ -1,23 +1,22 @@
-import sys
 from pathlib import Path
 
-_script_dir = Path(__file__).resolve().parent
-_project_root = _script_dir.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
-
+import argparse
 import json
-from itertools import combinations
+from itertools import combinations, islice
 
 import numpy as np
 import torch
+
+from quantumcanvas import batch_images
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
+from benchmarks.modality.common import maybe_sync as _maybe_sync
 from benchmarks.twobody_dataloader import TwoBodyDataset
 from benchmarks.models import get_model
+from benchmarks.modality.common import test_split
 
-RESULTS_DIR = "results_twobody"
+RESULTS_DIR = "outputs/twobody"
 DATASET_PATH = "dataset_combined.npz"
 
 MODELS = ["quantumshellnet"]
@@ -28,21 +27,17 @@ NUM_BATCHES = 0
 SEED = 42
 GROUPED = False
 
-def _maybe_sync(device: torch.device):
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-
 def _extract_images(data, model_type: str, device: torch.device, channel_indices=None):
 
     if model_type in {"vit", "multimodal"}:
         if channel_indices is not None:
 
-            images = torch.stack([d.image[channel_indices] for d in data.to_data_list()]).to(device).float()
+            images = batch_images(data)[:, channel_indices].to(device).float()
         else:
 
-            images = torch.stack([d.image[:3] for d in data.to_data_list()]).to(device).float()
+            images = batch_images(data)[:, :3].to(device).float()
     else:
-        images = torch.stack([d.image for d in data.to_data_list()]).to(device).float()
+        images = batch_images(data).to(device).float()
     return images
 
 @torch.no_grad()
@@ -110,9 +105,9 @@ def discover_checkpoints(results_dir: Path, models: list, seeds: list):
 
 def run_single(checkpoint_path: str, target: str, model_type: str, dataset_path: str,
                batch_size: int = BATCH_SIZE, device=None, num_batches: int = NUM_BATCHES,
-               seed: int = SEED, num_images: int = 10):
+               seed: int = SEED):
 
-    ckpt = torch.load(checkpoint_path, weights_only=False)
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     mt = ckpt.get("model_type") or model_type
     tg = ckpt.get("target") or target
     if mt is None or tg is None:
@@ -137,17 +132,11 @@ def run_single(checkpoint_path: str, target: str, model_type: str, dataset_path:
 
     denormalize_fn = full_dataset.denormalize_label
 
-    if mt == "quantumshellnet":
-
-        subset_indices = list(range(min(num_images, len(full_dataset))))
-        from torch.utils.data import Subset
-        dataset = Subset(full_dataset, subset_indices)
-    else:
-        dataset = full_dataset
+    dataset = test_split(full_dataset, seed)  # the checkpoint's held-out test pairs
 
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
     if num_batches > 0:
-        loader = list(loader)[:num_batches]
+        loader = list(islice(loader, num_batches))
 
     _maybe_sync(dev)
     baseline_mae, baseline_rmse = evaluate(model, loader, dev, mt, denormalize_fn)
@@ -220,30 +209,39 @@ def run_single(checkpoint_path: str, target: str, model_type: str, dataset_path:
         "mean_abs_delta_rmse": mean_abs_delta_rmse,
     }
 
+def parse_args():
+    p = argparse.ArgumentParser(description="Per-channel permutation importance for trained benchmark checkpoints.")
+    p.add_argument("--results_dir", default=RESULTS_DIR,
+                   help="directory with <target>/<model>/seed_*/best_model.pt (train_models_twobody output)")
+    p.add_argument("--dataset_path", default=DATASET_PATH)
+    p.add_argument("--models", nargs="+", default=MODELS)
+    p.add_argument("--seeds", nargs="+", default=SEEDS)
+    p.add_argument("--batch_size", type=int, default=BATCH_SIZE)
+    p.add_argument("--num_batches", type=int, default=NUM_BATCHES, help="0 = whole test split")
+    p.add_argument("--device", default=DEVICE)
+    return p.parse_args()
+
 def main():
-    results_dir = Path(__file__).resolve().parent.parent / RESULTS_DIR
-    if not results_dir.is_dir():
-        results_dir = Path.cwd() / RESULTS_DIR
-    dataset_path = Path(__file__).resolve().parent.parent / DATASET_PATH
-    if not dataset_path.is_file():
-        dataset_path = Path.cwd() / DATASET_PATH
-    dataset_path = str(dataset_path)
+    args = parse_args()
+    results_dir = Path(args.results_dir)
+    dataset_path = args.dataset_path
+    models = args.models
 
     if not results_dir.is_dir():
         print(f"Results directory not found: {results_dir}")
         return
 
-    checkpoints = list(discover_checkpoints(results_dir, MODELS, SEEDS))
+    checkpoints = list(discover_checkpoints(results_dir, models, args.seeds))
     if not checkpoints:
-        print(f"No checkpoints found under {results_dir} for {MODELS}. Expected: <target>/<model>/seed_*/best_model.pt")
+        print(f"No checkpoints found under {results_dir} for {models}. Expected: <target>/<model>/seed_*/best_model.pt")
         return
 
     print(f"Found {len(checkpoints)} checkpoints. Running channel permutation importance...\n")
     all_results = []
     for target, model_type, seed, ckpt in tqdm(checkpoints, desc="Checkpoints"):
         try:
-            r = run_single(ckpt, target, model_type, dataset_path, batch_size=BATCH_SIZE,
-                          device=DEVICE, num_batches=NUM_BATCHES, seed=int(seed))
+            r = run_single(ckpt, target, model_type, dataset_path, batch_size=args.batch_size,
+                          device=args.device, num_batches=args.num_batches, seed=int(seed))
             all_results.append(r)
 
             out_path = results_dir / f"perm_importance_{r['target']}_{r['model_type']}_seed_{seed}.json"
@@ -322,10 +320,10 @@ def main():
     average_per_target = {}
     for target in sorted(by_target.keys()):
         row = by_target[target]
-        vals_mae = [row[m]["baseline_mae"] for m in MODELS if m in row]
-        vals_rmse = [row[m]["baseline_rmse"] for m in MODELS if m in row]
-        delta_mae = [row[m]["mean_abs_delta_mae"] for m in MODELS if m in row]
-        delta_rmse = [row[m]["mean_abs_delta_rmse"] for m in MODELS if m in row]
+        vals_mae = [row[m]["baseline_mae"] for m in models if m in row]
+        vals_rmse = [row[m]["baseline_rmse"] for m in models if m in row]
+        delta_mae = [row[m]["mean_abs_delta_mae"] for m in models if m in row]
+        delta_rmse = [row[m]["mean_abs_delta_rmse"] for m in models if m in row]
         n = len(vals_mae)
         average_per_target[target] = {
             "n_models": n,
@@ -340,7 +338,7 @@ def main():
         row = by_target[target]
 
         channel_keys = set()
-        for m in MODELS:
+        for m in models:
             if m in row:
                 channel_keys.update(row[m]["importance"].keys())
         channel_keys = sorted(channel_keys)
@@ -349,7 +347,7 @@ def main():
         for ch_key in channel_keys:
             ch_deltas_mae = []
             ch_deltas_rmse = []
-            for m in MODELS:
+            for m in models:
                 if m in row and ch_key in row[m]["importance"]:
                     ch_deltas_mae.append(row[m]["importance"][ch_key]["delta_mae"])
                     ch_deltas_rmse.append(row[m]["importance"][ch_key]["delta_rmse"])
@@ -389,11 +387,11 @@ def main():
     for target in sorted(by_target.keys()):
         row = by_target[target]
         lines.append(f"\n--- {target} ---")
-        for model_type in MODELS:
+        for model_type in models:
             if model_type in row:
                 d = row[model_type]
                 lines.append(f"  {model_type:16}  baseline MAE: {d['baseline_mae']:.6f}  baseline RMSE: {d['baseline_rmse']:.6f}  "
-                            f"mean|ΔMAE|: {d['mean_abs_delta_mae']:.6f}  mean|ΔRMSE|: {d['mean_abs_delta_rmse']:.6f}  "
+                            f"mean|delta MAE|: {d['mean_abs_delta_mae']:.6f}  mean|delta RMSE|: {d['mean_abs_delta_rmse']:.6f}  "
                             f"(n_seeds={d['n_seeds']})")
 
     lines.append("\n" + "=" * 80)
@@ -404,10 +402,10 @@ def main():
         ch_data = per_channel_per_target[target]
         for ch_key in sorted(ch_data.keys()):
             ch = ch_data[ch_key]
-            lines.append(f"  {ch_key:8}  ΔMAE: {ch['delta_mae']:10.6f}  ΔRMSE: {ch['delta_rmse']:10.6f}")
+            lines.append(f"  {ch_key:8}  delta MAE: {ch['delta_mae']:10.6f}  delta RMSE: {ch['delta_rmse']:10.6f}")
 
     lines.append("\n" + "=" * 80)
-    lines.append(f"AVERAGE PER TARGET (over {', '.join(MODELS)})")
+    lines.append(f"AVERAGE PER TARGET (over {', '.join(models)})")
     lines.append("=" * 80)
     for target in sorted(by_target.keys()):
         a = average_per_target[target]
@@ -418,7 +416,7 @@ def main():
         avg_dm_s = f"{avg_dm:.6f}" if avg_dm is not None else "N/A"
         avg_dr_s = f"{avg_dr:.6f}" if avg_dr is not None else "N/A"
         lines.append(f"  {target:28}  models: {n}  avg baseline MAE: {avg_mae_s}  avg baseline RMSE: {avg_rmse_s}  "
-                    f"avg mean|ΔMAE|: {avg_dm_s}  avg mean|ΔRMSE|: {avg_dr_s}")
+                    f"avg mean|delta MAE|: {avg_dm_s}  avg mean|delta RMSE|: {avg_dr_s}")
 
     report_txt_path = results_dir / "channel_permutation_report.txt"
     with open(report_txt_path, "w", encoding="utf-8") as f:

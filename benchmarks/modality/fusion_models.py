@@ -1,4 +1,6 @@
 import torch
+
+from benchmarks.pairs import pair_view
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -60,7 +62,6 @@ class QuantumShellNetV2(nn.Module):
 
     def forward(self, images, z, pos, batch):
         B = images.size(0)
-        device = images.device
 
         x = images
         for conv, bn in zip(self.conv_layers, self.bn_layers):
@@ -69,29 +70,9 @@ class QuantumShellNetV2(nn.Module):
 
         cnn_features = x.view(B, -1)
 
-        atom_features_list = []
-        distances = []
-
-        for i in range(B):
-            mask = batch == i
-            z_mol = z[mask]
-            pos_mol = pos[mask]
-
-            z1_emb = self.element_embedding(z_mol[0])
-            z2_emb = self.element_embedding(z_mol[1] if len(z_mol) > 1 else z_mol[0])
-
-            a1 = self.atom_proj(z1_emb)
-            a2 = self.atom_proj(z2_emb)
-            atom_features_list.append(torch.stack([a1, a2]))
-
-            if len(pos_mol) > 1:
-                dist = (pos_mol[0] - pos_mol[1]).norm().unsqueeze(0)
-            else:
-                dist = torch.zeros(1, device=device)
-            distances.append(dist)
-
-        atom_features = torch.stack(atom_features_list)
-        distances = torch.stack(distances)
+        zz, _, dist = pair_view(z, pos, batch, B)
+        atom_features = self.atom_proj(self.element_embedding(zz))
+        distances = dist.unsqueeze(-1)
 
         query = cnn_features.unsqueeze(1)
         attended, _ = self.cross_attention(query, atom_features, atom_features)
@@ -222,32 +203,16 @@ class MultiModalFusionV2(nn.Module):
 
     def forward(self, images, z, pos, batch):
         B = images.size(0)
-        device = images.device
 
         img_patches = self.patch_embed(images)
         img_patches = img_patches.flatten(2).transpose(1, 2)
         img_patches = img_patches + self.pos_embed
         img_features = self.img_transformer(img_patches)
 
-        atom_features_list = []
-        for i in range(B):
-            mask = batch == i
-            z_mol = z[mask]
-            pos_mol = pos[mask]
-
-            z1_emb = self.element_embedding(z_mol[0])
-            z2_emb = self.element_embedding(z_mol[1] if len(z_mol) > 1 else z_mol[0])
-
-            if len(pos_mol) > 1:
-                dist = (pos_mol[0] - pos_mol[1]).norm()
-            else:
-                dist = torch.tensor(0.0, device=device)
-
-            a1 = torch.cat([z1_emb, dist.unsqueeze(0)])
-            a2 = torch.cat([z2_emb, dist.unsqueeze(0)])
-            atom_features_list.append(torch.stack([a1, a2]))
-
-        atom_features = torch.stack(atom_features_list)
+        zz, _, dist = pair_view(z, pos, batch, B)
+        dist = dist.unsqueeze(-1)
+        atom_features = torch.stack([torch.cat([self.element_embedding(zz[:, 0]), dist], dim=-1),
+                                     torch.cat([self.element_embedding(zz[:, 1]), dist], dim=-1)], dim=1)
         atom_features = self.atom_proj(atom_features)
 
         for cross_attn in self.cross_attention_layers:
@@ -309,26 +274,10 @@ class FiLMConditionedCNN(nn.Module):
 
     def forward(self, images, z, pos, batch):
         B = images.size(0)
-        device = images.device
 
-        conditioning_list = []
-        for i in range(B):
-            mask = batch == i
-            z_mol = z[mask]
-            pos_mol = pos[mask]
-
-            z1_emb = self.element_embedding(z_mol[0])
-            z2_emb = self.element_embedding(z_mol[1] if len(z_mol) > 1 else z_mol[0])
-
-            if len(pos_mol) > 1:
-                dist = (pos_mol[0] - pos_mol[1]).norm().unsqueeze(0)
-            else:
-                dist = torch.zeros(1, device=device)
-
-            cond = torch.cat([z1_emb, z2_emb, dist])
-            conditioning_list.append(cond)
-
-        conditioning = torch.stack(conditioning_list)
+        zz, _, dist = pair_view(z, pos, batch, B)
+        conditioning = torch.cat([self.element_embedding(zz[:, 0]), self.element_embedding(zz[:, 1]),
+                                  dist.unsqueeze(-1)], dim=-1)
 
         x = images
         for conv, bn, gamma_net, beta_net in zip(
